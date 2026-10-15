@@ -294,7 +294,33 @@ export default function App() {
   };
 
 
-  // Handlers for Registration
+  // Handlers for Registration via Supabase register_academy_atomic
+  const handleRegisterAtomicSuccess = async (rpcResult: any, memberships: UserMembership[]) => {
+    setIsRegisterOpen(false);
+
+    const session = await authService.getSession();
+    const user = session?.user || currentUser;
+
+    if (memberships && memberships.length > 0) {
+      applyMembershipContext(user, memberships);
+    } else {
+      if (session?.user) {
+        const freshMemberships = await authService.loadUserMemberships(session.user.id);
+        if (freshMemberships.length > 0) {
+          applyMembershipContext(session.user, freshMemberships);
+          return;
+        }
+      }
+      if (rpcResult?.tenant_id) {
+        setCurrentTenantId(rpcResult.tenant_id);
+        if (rpcResult.branch_id) setCurrentBranchId(rpcResult.branch_id);
+        setCurrentView('admin');
+        setAdminTab('overview');
+      }
+    }
+  };
+
+  // Handlers for Registration (Modo local de demonstração)
   const handleRegisterSuccess = (newTenant: Tenant, newBranch: Branch, newUser: User) => {
     const updatedTenants = [...tenants, newTenant];
     const updatedBranches = [...branches, newBranch];
@@ -882,6 +908,11 @@ export default function App() {
         isOpen={isRegisterOpen}
         onClose={() => setIsRegisterOpen(false)}
         onSuccess={handleRegisterSuccess}
+        onRegisterAtomicSuccess={handleRegisterAtomicSuccess}
+        onOpenLogin={() => {
+          setIsRegisterOpen(false);
+          setIsLoginOpen(true);
+        }}
       />
 
       <LoginModal

@@ -60,6 +60,7 @@ import { PlatformAdminView } from './components/superadmin/PlatformAdminView';
 
 // Supabase Real-Time & Auth Services
 import { supabase, authService, isSupabaseConfigured, UserMembership } from './services/supabase';
+import { studentService, CreateStudentPayload, isValidUUID } from './services/studentService';
 
 export default function App() {
   // App view navigation
@@ -101,6 +102,8 @@ export default function App() {
   const [competitionAthletes, setCompetitionAthletes] = useState<CompetitionAthlete[]>(() => DataStore.getCompetitionAthletes(currentTenantId));
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() => DataStore.getAuditLogs(currentTenantId));
 
+  const [isLoadingStudents, setIsLoadingStudents] = useState(false);
+
   // Sync data when currentTenantId changes
   useEffect(() => {
     setPersons(DataStore.getPersons(currentTenantId));
@@ -120,6 +123,44 @@ export default function App() {
     setCompetitions(DataStore.getCompetitions(currentTenantId));
     setCompetitionAthletes(DataStore.getCompetitionAthletes(currentTenantId));
     setAuditLogs(DataStore.getAuditLogs(currentTenantId));
+  }, [currentTenantId]);
+
+  // Carregar alunos em tempo real do banco de dados quando conectado e autenticado
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadSupabaseStudents() {
+      if (!isSupabaseConfigured() || !supabase || !isValidUUID(currentTenantId)) {
+        return;
+      }
+
+      setIsLoadingStudents(true);
+      try {
+        const result = await studentService.fetchStudentsWithDetails(currentTenantId);
+        if (result && isMounted) {
+          setStudents(result.students);
+          setPersons((prev) => {
+            const nonStudentPersons = prev.filter(
+              (p) => !result.persons.some((rp) => rp.id === p.id)
+            );
+            return [...result.persons, ...nonStudentPersons];
+          });
+          setGuardians(result.guardians);
+        }
+      } catch (err) {
+        console.warn('Erro ao sincronizar alunos do banco:', err);
+      } finally {
+        if (isMounted) {
+          setIsLoadingStudents(false);
+        }
+      }
+    }
+
+    loadSupabaseStudents();
+
+    return () => {
+      isMounted = false;
+    };
   }, [currentTenantId]);
 
   const activeTenant = tenants.find(t => t.id === currentTenantId) || tenants[0];
@@ -353,12 +394,52 @@ export default function App() {
   };
 
   // Handlers for Student Creation
-  const handleSaveStudent = (
+  const handleSaveStudent = async (
     newStudent: Student,
     newPerson: Person,
     guardianPerson?: Person,
-    relationship?: GuardianRelationship
+    relationship?: GuardianRelationship,
+    payloadDetails?: CreateStudentPayload
   ) => {
+    // 1. Prioridade para persistência real no Supabase
+    if (isSupabaseConfigured() && supabase && isValidUUID(currentTenantId) && payloadDetails) {
+      try {
+        const result = await studentService.createStudent(payloadDetails);
+
+        setStudents((prev) => [result.student, ...prev]);
+        setPersons((prev) => {
+          const toAdd = result.guardianPerson ? [result.person, result.guardianPerson] : [result.person];
+          const filtered = prev.filter(
+            (p) => p.id !== result.person.id && (!result.guardianPerson || p.id !== result.guardianPerson.id)
+          );
+          return [...toAdd, ...filtered];
+        });
+        if (result.relationship) {
+          setGuardians((prev) => [result.relationship!, ...prev]);
+        }
+
+        // Cache local
+        DataStore.saveStudents([result.student, ...students]);
+
+        DataStore.logAudit(
+          currentTenantId,
+          currentUser.id,
+          currentUser.name,
+          'Matrícula de Aluno',
+          'Student',
+          result.student.id,
+          `Matriculado o aluno ${result.person.fullName} no banco de dados.`
+        );
+
+        setIsNewStudentOpen(false);
+        return;
+      } catch (err: any) {
+        console.error('Falha na persistência no Supabase:', err);
+        throw err;
+      }
+    }
+
+    // 2. Fallback localStorage (modo demonstração local)
     const updatedStudents = [...students, newStudent];
     const updatedPersons = guardianPerson ? [...persons, newPerson, guardianPerson] : [...persons, newPerson];
     const updatedGuardians = relationship ? [...guardians, relationship] : guardians;
@@ -695,6 +776,7 @@ export default function App() {
               belts={beltRanks}
               classes={classes}
               enrollments={enrollments}
+              isLoading={isLoadingStudents}
               onOpenCreateStudent={() => setIsNewStudentOpen(true)}
               onEditStudent={() => {}}
             />

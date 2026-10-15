@@ -44,6 +44,7 @@ interface StudentsViewProps {
   belts: BeltRank[];
   classes: ClassGroup[];
   enrollments: Enrollment[];
+  isLoading?: boolean;
   onOpenCreateStudent: () => void;
   onEditStudent: (student: Student) => void;
 }
@@ -57,6 +58,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   belts,
   classes,
   enrollments,
+  isLoading,
   onOpenCreateStudent,
   onEditStudent,
 }) => {
@@ -380,6 +382,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               {profileTab === 'id' && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="p-3 rounded-lg border border-slate-800 bg-slate-950/60 space-y-2">
+                    {activePerson.socialName && (
+                      <div className="text-slate-400">Nome Social: <span className="text-red-400 font-semibold">{activePerson.socialName}</span></div>
+                    )}
                     <div className="text-slate-400">CPF: <span className="text-white font-mono">{formatCPF(activePerson.cpf)}</span></div>
                     <div className="text-slate-400">Nascimento: <span className="text-white font-mono">{formatDateBR(activePerson.birthDate)}</span></div>
                     <div className="text-slate-400">Gênero: <span className="text-white capitalize">{activePerson.gender === 'male' ? 'Masculino' : 'Feminino'}</span></div>

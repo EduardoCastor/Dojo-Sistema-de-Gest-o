@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, UserPlus, Check, AlertCircle } from 'lucide-react';
+import { X, UserPlus, Check, AlertCircle, Loader2 } from 'lucide-react';
 import {
   Student,
   Person,
@@ -8,6 +8,7 @@ import {
   MartialArt,
 } from '../../types';
 import { calculateAge } from '../../utils/formatters';
+import { CreateStudentPayload } from '../../services/studentService';
 
 interface StudentFormModalProps {
   isOpen: boolean;
@@ -20,8 +21,9 @@ interface StudentFormModalProps {
     newStudent: Student,
     newPerson: Person,
     guardianPerson?: Person,
-    relationship?: GuardianRelationship
-  ) => void;
+    relationship?: GuardianRelationship,
+    payloadDetails?: CreateStudentPayload
+  ) => Promise<void> | void;
 }
 
 export const StudentFormModal: React.FC<StudentFormModalProps> = ({
@@ -35,6 +37,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
 }) => {
   // Student Personal Data
   const [fullName, setFullName] = useState('');
+  const [socialName, setSocialName] = useState('');
   const [cpf, setCpf] = useState('');
   const [birthDate, setBirthDate] = useState('2014-05-10');
   const [gender, setGender] = useState<'male' | 'female' | 'other'>('male');
@@ -56,17 +59,27 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
   const [relationshipType, setRelationshipType] = useState('Pai');
 
   const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   if (!isOpen) return null;
 
   const currentAge = calculateAge(birthDate);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
+
     if (!fullName.trim() || !birthDate) {
       setError('Por favor, informe ao menos o nome completo e data de nascimento do aluno.');
       return;
     }
+
+    if (hasGuardian && (!guardianName.trim())) {
+      setError('Por favor, informe o nome do responsável ou desmarque a opção de vincular responsável.');
+      return;
+    }
+
+    setIsSubmitting(true);
 
     const studentPersonId = `person-${Date.now()}`;
     const studentId = `student-${Date.now()}`;
@@ -75,7 +88,8 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
     const newPerson: Person = {
       id: studentPersonId,
       tenantId,
-      fullName,
+      fullName: fullName.trim(),
+      socialName: socialName.trim() || undefined,
       cpf: cpf || '000.000.000-00',
       birthDate,
       gender,
@@ -124,7 +138,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       guardianPerson = {
         id: guardianId,
         tenantId,
-        fullName: guardianName,
+        fullName: guardianName.trim(),
         cpf: guardianCpf || '111.222.333-44',
         birthDate: '1985-01-01',
         gender: 'male',
@@ -147,7 +161,37 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       };
     }
 
-    onSave(newStudent, newPerson, guardianPerson, relationship);
+    const payloadDetails: CreateStudentPayload = {
+      tenantId,
+      branchId,
+      fullName: fullName.trim(),
+      socialName: socialName.trim() || undefined,
+      cpf,
+      birthDate,
+      gender,
+      phone,
+      email,
+      city,
+      monthlyFee: Number(monthlyFee) || 220,
+      martialArtId: selectedArtId,
+      beltRankId: selectedBeltId,
+      selectedArt: chosenArt,
+      selectedBelt: chosenBelt,
+      hasGuardian,
+      guardianName: guardianName.trim(),
+      guardianCpf,
+      guardianPhone,
+      guardianEmail,
+      relationshipType,
+    };
+
+    try {
+      await onSave(newStudent, newPerson, guardianPerson, relationship, payloadDetails);
+    } catch (err: any) {
+      setError(err?.message || 'Erro ao persistir aluno.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -184,7 +228,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
               1. Identificação do Aluno
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="block text-slate-300 font-medium mb-1">Nome Completo *</label>
                 <input
@@ -193,6 +237,17 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
                   placeholder="Nome do atleta"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">Nome Social (Opcional)</label>
+                <input
+                  type="text"
+                  value={socialName}
+                  onChange={(e) => setSocialName(e.target.value)}
+                  placeholder="Como prefere ser chamado"
                   className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
                 />
               </div>
@@ -382,17 +437,28 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
           <div className="flex items-center justify-end gap-3 pt-3">
             <button
               type="button"
+              disabled={isSubmitting}
               onClick={onClose}
-              className="px-4 py-2 rounded-lg border border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors cursor-pointer"
+              className="px-4 py-2 rounded-lg border border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors cursor-pointer disabled:opacity-50"
             >
               Cancelar
             </button>
             <button
               type="submit"
-              className="flex items-center gap-1.5 px-5 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-500 transition-colors shadow cursor-pointer"
+              disabled={isSubmitting}
+              className="flex items-center gap-1.5 px-5 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-500 transition-colors shadow cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Check className="h-4 w-4" />
-              <span>Salvar Aluno</span>
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Gravando no Banco...</span>
+                </>
+              ) : (
+                <>
+                  <Check className="h-4 w-4" />
+                  <span>Salvar Aluno</span>
+                </>
+              )}
             </button>
           </div>
         </form>

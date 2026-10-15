@@ -134,7 +134,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             {supabaseActive && (
               <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded">
                 <Cloud className="h-3 w-3" />
-                <span>Supabase Conectado</span>
+                <span>Dados Conectados</span>
               </span>
             )}
           </div>
@@ -153,7 +153,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             }`}
           >
-            Autenticação Supabase
+            Autenticação de Dados
           </button>
           <button
             onClick={() => setActiveTab('personas')}
@@ -173,10 +173,10 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               <div className="p-4 rounded-xl border border-amber-600/40 bg-amber-950/30 text-xs text-amber-200 space-y-2 mb-4">
                 <div className="font-bold flex items-center gap-1.5 text-amber-300">
                   <AlertCircle className="h-4 w-4 shrink-0" />
-                  <span>Variáveis de Ambiente Supabase Pendentes</span>
+                  <span>Variáveis de Conexão de Dados Pendentes</span>
                 </div>
                 <p className="leading-relaxed">
-                  Para utilizar a autenticação real com Supabase Auth na nuvem, configure as variáveis:
+                  Para utilizar a autenticação e persistência real de dados na nuvem, configure as variáveis:
                   <br />
                   <code className="text-[11px] bg-slate-900 px-1.5 py-0.5 rounded text-white font-mono">
                     VITE_SUPABASE_URL
@@ -306,7 +306,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                     className="w-full flex items-center justify-center gap-2 rounded-lg bg-red-600 py-2.5 text-xs font-semibold text-white hover:bg-red-500 active:bg-red-700 transition-colors shadow cursor-pointer disabled:opacity-50"
                   >
                     {loading ? (
-                      <span>Processando no Supabase...</span>
+                      <span>Processando dados...</span>
                     ) : authMode === 'login' ? (
                       <>
                         <span>Acessar Conta</span>

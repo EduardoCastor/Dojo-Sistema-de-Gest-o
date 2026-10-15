@@ -58,6 +58,9 @@ import { StudentDashboard } from './components/student-portal/StudentDashboard';
 import { GuardianPortal } from './components/student-portal/GuardianPortal';
 import { PlatformAdminView } from './components/superadmin/PlatformAdminView';
 
+// Supabase Real-Time & Auth Services
+import { supabase, authService, isSupabaseConfigured, UserMembership } from './services/supabase';
+
 export default function App() {
   // App view navigation
   const [currentView, setCurrentView] = useState<'public' | 'admin' | 'student_portal' | 'guardian_portal' | 'superadmin'>('public');
@@ -123,6 +126,151 @@ export default function App() {
   const tenantBranches = branches.filter(b => b.tenantId === currentTenantId);
   const currentUser = users.find(u => u.id === currentUserId) || users[1]; // default owner
 
+  // Supabase Auth Session listener
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !supabase) return;
+
+    // Verificar sessão existente ao carregar o aplicativo
+    authService.getSession().then(async (session) => {
+      if (session?.user) {
+        const memberships = await authService.loadUserMemberships(session.user.id);
+        if (memberships.length > 0) {
+          applyMembershipContext(session.user, memberships);
+        }
+      }
+    });
+
+    // Escutar eventos de login/logout em tempo real
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session?.user) {
+        const memberships = await authService.loadUserMemberships(session.user.id);
+        if (memberships.length > 0) {
+          applyMembershipContext(session.user, memberships);
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setCurrentView('public');
+      }
+    });
+
+    return () => {
+      authListener?.subscription?.unsubscribe();
+    };
+  }, []);
+
+  const applyMembershipContext = (user: any, memberships: UserMembership[]) => {
+    const primary = memberships[0];
+    if (!primary) return;
+
+    const tenantData = primary.tenant;
+    if (tenantData) {
+      setTenants((prev) => {
+        if (!prev.some((t) => t.id === primary.tenant_id)) {
+          const loadedTenant: Tenant = {
+            id: primary.tenant_id,
+            tradeName: tenantData.trade_name,
+            legalName: tenantData.legal_name || tenantData.trade_name,
+            cnpjOrCpf: tenantData.cnpj_or_cpf,
+            adminName: user.user_metadata?.full_name || 'Administrador',
+            email: user.email || '',
+            phone: '',
+            whatsapp: '',
+            address: {
+              street: '',
+              number: '',
+              neighborhood: '',
+              city: 'São Paulo',
+              state: 'SP',
+              zipCode: '',
+            },
+            planId: (tenantData.plan_id as any) || 'trial',
+            status: (tenantData.status as any) || 'trial',
+            trialStartedAt: new Date().toISOString(),
+            trialExpiresAt: tenantData.trial_expires_at || new Date().toISOString(),
+            createdAt: new Date().toISOString(),
+            retentionDays: 60,
+            settings: tenantData.settings || {
+              defaultDueDay: 10,
+              penaltyRate: 2,
+              dailyInterestRate: 0.033,
+              familyDiscount2ndMember: 15,
+              multiArtDiscount: 20,
+              customBrandColor: '#dc2626',
+            },
+          };
+          return [loadedTenant, ...prev];
+        }
+        return prev;
+      });
+    }
+
+    const branchData = primary.branch;
+    if (branchData) {
+      setBranches((prev) => {
+        if (!prev.some((b) => b.id === primary.branch_id)) {
+          const loadedBranch: Branch = {
+            id: primary.branch_id || 'branch-matriz',
+            tenantId: primary.tenant_id,
+            name: branchData.name || 'Unidade Matriz',
+            isHeadquarter: branchData.is_headquarter ?? true,
+            phone: '',
+            email: user.email || '',
+            address: '',
+            managerName: user.user_metadata?.full_name || 'Gestor',
+            active: true,
+          };
+          return [loadedBranch, ...prev];
+        }
+        return prev;
+      });
+    }
+
+    const authenticatedUser: User = {
+      id: user.id,
+      tenantId: primary.tenant_id,
+      branchId: primary.branch_id || undefined,
+      name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Usuário Autenticado',
+      email: user.email || '',
+      role: primary.role,
+      phone: user.user_metadata?.phone || '',
+      active: true,
+    };
+
+    setUsers((prev) => {
+      const filtered = prev.filter((u) => u.id !== user.id);
+      return [authenticatedUser, ...filtered];
+    });
+
+    setCurrentTenantId(primary.tenant_id);
+    if (primary.branch_id) setCurrentBranchId(primary.branch_id);
+    setCurrentUserId(user.id);
+
+    if (primary.role === 'student') {
+      setCurrentView('student_portal');
+    } else if (primary.role === 'guardian') {
+      setCurrentView('guardian_portal');
+    } else {
+      setCurrentView('admin');
+      setAdminTab('overview');
+    }
+  };
+
+  const handleAuthSuccess = (user: any, memberships: UserMembership[]) => {
+    if (memberships && memberships.length > 0) {
+      applyMembershipContext(user, memberships);
+    } else {
+      // Usuário autenticado com sucesso, mas sem academia vinculada
+      // Abre cadastro da primeira academia
+      setIsRegisterOpen(true);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (isSupabaseConfigured()) {
+      await authService.signOut();
+    }
+    setCurrentView('public');
+  };
+
   // Handlers for User Switching & Login
   const handleSelectUser = (user: User) => {
     setCurrentUserId(user.id);
@@ -144,6 +292,7 @@ export default function App() {
       setAdminTab('overview');
     }
   };
+
 
   // Handlers for Registration
   const handleRegisterSuccess = (newTenant: Tenant, newBranch: Branch, newUser: User) => {
@@ -494,7 +643,7 @@ export default function App() {
           activeTab={adminTab}
           onSelectTab={setAdminTab}
           onSwitchPersona={() => setIsLoginOpen(true)}
-          onLogout={() => setCurrentView('public')}
+          onLogout={handleLogout}
           onUpgradePlan={() => setIsUpgradePlanOpen(true)}
         >
           {adminTab === 'overview' && (
@@ -643,7 +792,7 @@ export default function App() {
           currentUser={currentUser}
           tenant={activeTenant}
           onSwitchPersona={() => setIsLoginOpen(true)}
-          onLogout={() => setCurrentView('public')}
+          onLogout={handleLogout}
         >
           {(() => {
             const currentStudent = students.find(s => s.id === currentUser.studentId) || students[0];
@@ -669,7 +818,7 @@ export default function App() {
           currentUser={currentUser}
           tenant={activeTenant}
           onSwitchPersona={() => setIsLoginOpen(true)}
-          onLogout={() => setCurrentView('public')}
+          onLogout={handleLogout}
         >
           {(() => {
             const guardianPerson = persons.find(p => p.id === currentUser.guardianPersonId) || persons[2];
@@ -705,10 +854,10 @@ export default function App() {
                 Trocar Persona
               </button>
               <button
-                onClick={() => setCurrentView('public')}
+                onClick={handleLogout}
                 className="px-3 py-1.5 rounded-lg bg-red-600 text-xs font-semibold text-white hover:bg-red-500"
               >
-                Ver Site Comercial
+                Sair / Desconectar
               </button>
             </div>
           </div>
@@ -740,6 +889,7 @@ export default function App() {
         onClose={() => setIsLoginOpen(false)}
         users={users}
         onSelectUser={handleSelectUser}
+        onAuthSuccess={handleAuthSuccess}
       />
 
       <StudentFormModal

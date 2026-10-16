@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, UserPlus, Check, AlertCircle, Loader2, Edit } from 'lucide-react';
+import { X, UserPlus, Check, AlertCircle, Loader2, Edit, Award } from 'lucide-react';
 import {
   Student,
   Person,
@@ -8,15 +8,20 @@ import {
   MartialArt,
 } from '../../types';
 import { calculateAge } from '../../utils/formatters';
-import { CreateStudentPayload, UpdateStudentPayload } from '../../services/studentService';
+import {
+  studentService,
+  isValidUUID,
+  CreateStudentPayload,
+  UpdateStudentPayload,
+} from '../../services/studentService';
 
 interface StudentFormModalProps {
   isOpen: boolean;
   onClose: () => void;
   tenantId: string;
   branchId: string;
-  belts: BeltRank[];
-  martialArts: MartialArt[];
+  belts?: BeltRank[];
+  martialArts?: MartialArt[];
   studentToEdit?: Student | null;
   personToEdit?: Person | null;
   guardianRelToEdit?: GuardianRelationship | null;
@@ -53,23 +58,18 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
 }) => {
   const isEditing = Boolean(studentToEdit);
 
-  const availableArts: MartialArt[] = (martialArts && martialArts.length > 0) ? martialArts : [
-    { id: 'art-judo', tenantId, name: 'Judô', origin: 'Japão', description: 'Caminho Suave', status: 'active' },
-    { id: 'art-bjj', tenantId, name: 'Jiu-Jítsu Brasileiro', origin: 'Brasil', description: 'Arte Suave', status: 'active' },
-    { id: 'art-karate', tenantId, name: 'Karatê', origin: 'Japão', description: 'Mãos Vazias', status: 'active' },
-  ];
+  // Modalidades e Graduações carregadas exclusivamente do Supabase
+  const [loadedArts, setLoadedArts] = useState<MartialArt[]>([]);
+  const [loadedBelts, setLoadedBelts] = useState<BeltRank[]>([]);
+  const [isLoadingArts, setIsLoadingArts] = useState(false);
+  const [isLoadingBelts, setIsLoadingBelts] = useState(false);
+  const [artsError, setArtsError] = useState<string | null>(null);
+  const [beltsError, setBeltsError] = useState<string | null>(null);
+  const [graduationNotice, setGraduationNotice] = useState<string | null>(null);
 
-  const availableBelts: BeltRank[] = (belts && belts.length > 0) ? belts : [
-    { id: 'rank-judo-branca', tenantId, martialArtId: 'art-judo', name: 'Faixa Branca', colorHex: '#ffffff', orderIndex: 1, rankType: 'faixa', minAgeYears: 4, minPracticeMonths: 0, technicalRequirements: 'Fundamentos', requiresExam: false },
-    { id: 'rank-judo-cinza', tenantId, martialArtId: 'art-judo', name: 'Faixa Cinza', colorHex: '#9ca3af', orderIndex: 2, rankType: 'faixa', minAgeYears: 6, minPracticeMonths: 6, technicalRequirements: 'Ukemi e Nage-waza básicos', requiresExam: true },
-    { id: 'rank-judo-azul', tenantId, martialArtId: 'art-judo', name: 'Faixa Azul', colorHex: '#2563eb', orderIndex: 3, rankType: 'faixa', minAgeYears: 8, minPracticeMonths: 12, technicalRequirements: 'Gokyo Dai-ikkyo', requiresExam: true },
-    { id: 'rank-judo-amarela', tenantId, martialArtId: 'art-judo', name: 'Faixa Amarela', colorHex: '#eab308', orderIndex: 4, rankType: 'faixa', minAgeYears: 9, minPracticeMonths: 12, technicalRequirements: 'Gokyo Dai-nikyo', requiresExam: true },
-    { id: 'rank-judo-laranja', tenantId, martialArtId: 'art-judo', name: 'Faixa Laranja', colorHex: '#f97316', orderIndex: 5, rankType: 'faixa', minAgeYears: 10, minPracticeMonths: 12, technicalRequirements: 'Gokyo Dai-sankyo', requiresExam: true },
-    { id: 'rank-judo-verde', tenantId, martialArtId: 'art-judo', name: 'Faixa Verde', colorHex: '#22c55e', orderIndex: 6, rankType: 'faixa', minAgeYears: 12, minPracticeMonths: 12, technicalRequirements: 'Gokyo Dai-yonkyo', requiresExam: true },
-    { id: 'rank-judo-roxa', tenantId, martialArtId: 'art-judo', name: 'Faixa Roxa', colorHex: '#9333ea', orderIndex: 7, rankType: 'faixa', minAgeYears: 14, minPracticeMonths: 18, technicalRequirements: 'Gokyo Gokyo', requiresExam: true },
-    { id: 'rank-judo-marrom', tenantId, martialArtId: 'art-judo', name: 'Faixa Marrom', colorHex: '#78350f', orderIndex: 8, rankType: 'faixa', minAgeYears: 15, minPracticeMonths: 24, technicalRequirements: 'Nage-no-kata completo', requiresExam: true },
-    { id: 'rank-judo-preta', tenantId, martialArtId: 'art-judo', name: 'Faixa Preta', colorHex: '#000000', orderIndex: 9, rankType: 'faixa', minAgeYears: 18, minPracticeMonths: 36, technicalRequirements: 'Shodan Shinsa', requiresExam: true },
-  ];
+  // Seleções do formulário (utilizam UUID real do Supabase)
+  const [selectedArtId, setSelectedArtId] = useState<string>('');
+  const [selectedBeltId, setSelectedBeltId] = useState<string>('');
 
   const activePersonToEdit: Person = personToEdit || {
     id: studentToEdit?.personId || `person-${studentToEdit?.id || Date.now()}`,
@@ -104,10 +104,6 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
   const [monthlyFee, setMonthlyFee] = useState('220');
   const [studentStatus, setStudentStatus] = useState<'active' | 'inactive' | 'suspended' | 'dropped'>('active');
 
-  // Belt & Martial Art
-  const [selectedArtId, setSelectedArtId] = useState(availableArts[0]?.id || 'art-judo');
-  const [selectedBeltId, setSelectedBeltId] = useState(availableBelts[0]?.id || 'rank-judo-branca');
-
   // Guardian Data (if minor)
   const [hasGuardian, setHasGuardian] = useState(true);
   const [guardianName, setGuardianName] = useState('');
@@ -119,7 +115,152 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Sincronizar dados ao abrir para criar ou editar
+  // 1. Carregar Modalidades Reais do Supabase vinculadas à academia ativa (tenant_id)
+  useEffect(() => {
+    let isMounted = true;
+
+    if (!isOpen) {
+      setLoadedArts([]);
+      setLoadedBelts([]);
+      setSelectedArtId('');
+      setSelectedBeltId('');
+      setArtsError(null);
+      setBeltsError(null);
+      setGraduationNotice(null);
+      return;
+    }
+
+    async function loadArts() {
+      setIsLoadingArts(true);
+      setArtsError(null);
+      setGraduationNotice(null);
+
+      try {
+        const arts = await studentService.fetchMartialArts(tenantId);
+        if (!isMounted) return;
+
+        setLoadedArts(arts);
+
+        if (arts.length === 0) {
+          setArtsError('Nenhuma modalidade ativa encontrada para esta academia no Supabase. Cadastre ao menos uma modalidade no menu "Modalidades".');
+          setSelectedArtId('');
+          setLoadedBelts([]);
+          setSelectedBeltId('');
+          return;
+        }
+
+        if (studentToEdit) {
+          // Identificar se o aluno possui graduação vinculada a alguma modalidade ativa
+          const activeGrad = studentToEdit.currentGraduations?.find((g) =>
+            arts.some((a) => a.id === g.martialArtId)
+          );
+
+          if (activeGrad) {
+            setSelectedArtId(activeGrad.martialArtId);
+          } else {
+            setSelectedArtId('');
+            setGraduationNotice(
+              'O aluno não possui graduação registrada em nenhuma das modalidades ativas da academia no Supabase. Selecione a modalidade e a faixa para vincular.'
+            );
+          }
+        } else {
+          // Cadastro de novo aluno: não seleciona automaticamente
+          setSelectedArtId('');
+          setSelectedBeltId('');
+        }
+      } catch (err: any) {
+        if (!isMounted) return;
+        console.error('Falha ao consultar modalidades do Supabase:', err);
+        setArtsError(err.message || 'Erro ao consultar modalidades no Supabase.');
+        setLoadedArts([]);
+        setSelectedArtId('');
+      } finally {
+        if (isMounted) {
+          setIsLoadingArts(false);
+        }
+      }
+    }
+
+    loadArts();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen, tenantId, studentToEdit]);
+
+  // 2. Carregar Faixas/Graduações Reais do Supabase correspondentes à modalidade selecionada
+  useEffect(() => {
+    let isMounted = true;
+
+    if (!isOpen || !selectedArtId || !isValidUUID(selectedArtId)) {
+      setLoadedBelts([]);
+      setSelectedBeltId('');
+      setBeltsError(null);
+      setIsLoadingBelts(false);
+      return;
+    }
+
+    async function loadBelts() {
+      setIsLoadingBelts(true);
+      setBeltsError(null);
+
+      try {
+        const beltsData = await studentService.fetchBeltRanks(tenantId, selectedArtId);
+        if (!isMounted) return;
+
+        setLoadedBelts(beltsData);
+
+        if (beltsData.length === 0) {
+          setBeltsError('Nenhuma faixa/graduação cadastrada para esta modalidade no Supabase.');
+          setSelectedBeltId('');
+          return;
+        }
+
+        if (studentToEdit) {
+          // Verificar se o aluno já possui graduação nesta modalidade específica
+          const existingGrad = studentToEdit.currentGraduations?.find(
+            (g) => g.martialArtId === selectedArtId
+          );
+
+          if (existingGrad) {
+            const matchingBelt = beltsData.find((b) => b.id === existingGrad.beltId);
+            if (matchingBelt) {
+              setSelectedBeltId(matchingBelt.id);
+            } else {
+              setSelectedBeltId('');
+              setGraduationNotice(
+                `A faixa registrada anteriormente (${existingGrad.beltName}) não foi encontrada nas graduações cadastradas desta modalidade. Selecione a faixa correspondente para atualizar.`
+              );
+            }
+          } else {
+            setSelectedBeltId('');
+            setGraduationNotice('O aluno ainda não possui graduação cadastrada nesta modalidade. Selecione a faixa desejada para vincular.');
+          }
+        } else {
+          // Cadastro de novo aluno: limpar graduação anterior e exigir seleção válida
+          setSelectedBeltId('');
+        }
+      } catch (err: any) {
+        if (!isMounted) return;
+        console.error('Falha ao consultar graduações no Supabase:', err);
+        setBeltsError(err.message || 'Erro ao carregar faixas desta modalidade.');
+        setLoadedBelts([]);
+        setSelectedBeltId('');
+      } finally {
+        if (isMounted) {
+          setIsLoadingBelts(false);
+        }
+      }
+    }
+
+    loadBelts();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen, tenantId, selectedArtId, studentToEdit]);
+
+  // 3. Sincronizar dados pessoais ao abrir para criar ou editar
   useEffect(() => {
     if (!isOpen) return;
 
@@ -138,11 +279,6 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       setCity(p.address?.city || 'São Paulo');
       setMonthlyFee(String(studentToEdit.monthlyFee ?? 220));
       setStudentStatus(studentToEdit.status || 'active');
-
-      const initialArtId = studentToEdit.currentGraduations?.[0]?.martialArtId || availableArts[0]?.id || 'art-judo';
-      setSelectedArtId(initialArtId);
-      const initialBeltId = studentToEdit.currentGraduations?.[0]?.beltId || availableBelts[0]?.id || 'rank-judo-branca';
-      setSelectedBeltId(initialBeltId);
 
       if (guardianPersonToEdit) {
         setHasGuardian(true);
@@ -172,8 +308,6 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       setCity('São Paulo');
       setMonthlyFee('220');
       setStudentStatus('active');
-      setSelectedArtId(availableArts[0]?.id || 'art-judo');
-      setSelectedBeltId(availableBelts[0]?.id || 'rank-judo-branca');
       setHasGuardian(true);
       setGuardianName('');
       setGuardianCpf('');
@@ -181,7 +315,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       setGuardianEmail('');
       setRelationshipType('Pai');
     }
-  }, [isOpen, studentToEdit, personToEdit, guardianRelToEdit, guardianPersonToEdit, martialArts, belts]);
+  }, [isOpen, studentToEdit, personToEdit, guardianRelToEdit, guardianPersonToEdit]);
 
   if (!isOpen) return null;
 
@@ -203,8 +337,26 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
 
     setIsSubmitting(true);
 
-    const chosenBelt = belts.find(b => b.id === selectedBeltId) || availableBelts.find(b => b.id === selectedBeltId) || availableBelts[0];
-    const chosenArt = martialArts.find(m => m.id === selectedArtId) || availableArts.find(m => m.id === selectedArtId) || availableArts[0];
+    if (!selectedArtId || !isValidUUID(selectedArtId)) {
+      setError('Por favor, selecione uma Arte Marcial válida cadastrada no Supabase.');
+      setIsSubmitting(false);
+      return;
+    }
+
+    if (!selectedBeltId || !isValidUUID(selectedBeltId)) {
+      setError('Por favor, selecione uma Faixa / Graduação válida pertencente à modalidade escolhida.');
+      setIsSubmitting(false);
+      return;
+    }
+
+    const chosenArt = loadedArts.find((m) => m.id === selectedArtId);
+    const chosenBelt = loadedBelts.find((b) => b.id === selectedBeltId);
+
+    if (!chosenArt || !chosenBelt) {
+      setError('A modalidade ou graduação selecionada não foi encontrada nos registros do Supabase.');
+      setIsSubmitting(false);
+      return;
+    }
 
     // ==========================================
     // FLUXO DE EDIÇÃO DE ALUNO EXISTENTE
@@ -232,12 +384,12 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
         status: studentStatus,
         currentGraduations: [
           {
-            martialArtId: chosenArt?.id || studentToEdit.currentGraduations?.[0]?.martialArtId || 'art-judo',
-            martialArtName: chosenArt?.name || studentToEdit.currentGraduations?.[0]?.martialArtName || 'Judô',
-            beltId: chosenBelt?.id || studentToEdit.currentGraduations?.[0]?.beltId || 'rank-judo-branca',
-            beltName: chosenBelt?.name || studentToEdit.currentGraduations?.[0]?.beltName || 'Faixa Branca',
-            beltColorHex: chosenBelt?.colorHex || studentToEdit.currentGraduations?.[0]?.beltColorHex || '#ffffff',
-            graduatedAt: studentToEdit.currentGraduations?.[0]?.graduatedAt || new Date().toISOString().split('T')[0],
+            martialArtId: chosenArt.id,
+            martialArtName: chosenArt.name,
+            beltId: chosenBelt.id,
+            beltName: chosenBelt.name,
+            beltColorHex: chosenBelt.colorHex || '#ffffff',
+            graduatedAt: new Date().toISOString().split('T')[0],
           },
         ],
       };
@@ -354,11 +506,11 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       status: studentStatus,
       currentGraduations: [
         {
-          martialArtId: chosenArt?.id || 'art-judo',
-          martialArtName: chosenArt?.name || 'Judô',
-          beltId: chosenBelt?.id || 'rank-judo-branca',
-          beltName: chosenBelt?.name || 'Faixa Branca',
-          beltColorHex: chosenBelt?.colorHex || '#ffffff',
+          martialArtId: chosenArt.id,
+          martialArtName: chosenArt.name,
+          beltId: chosenBelt.id,
+          beltName: chosenBelt.name,
+          beltColorHex: chosenBelt.colorHex || '#ffffff',
           graduatedAt: new Date().toISOString().split('T')[0],
         },
       ],
@@ -569,34 +721,123 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
 
           {/* Seção 2: Modalidade, Graduação e Mensalidade */}
           <div className="p-3.5 rounded-xl border border-slate-800 bg-slate-950/60 space-y-3">
-            <div className="font-semibold text-slate-200 text-xs uppercase tracking-wider">
-              2. Modalidade, Graduação & Situação
+            <div className="flex items-center justify-between">
+              <div className="font-semibold text-slate-200 text-xs uppercase tracking-wider">
+                2. Modalidade, Graduação & Situação
+              </div>
+              {isLoadingArts && (
+                <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                  <Loader2 className="h-3 w-3 animate-spin text-red-400" />
+                  <span>Consultando Supabase...</span>
+                </div>
+              )}
             </div>
+
+            {/* Aviso quando o aluno possui múltiplas artes marciais cadastradas */}
+            {studentToEdit && (studentToEdit.currentGraduations || []).length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 p-2 rounded-lg bg-slate-900 border border-slate-800 text-[11px]">
+                <span className="text-slate-400 font-medium">Graduações atuais do aluno:</span>
+                {studentToEdit.currentGraduations.map((g, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => {
+                      setSelectedArtId(g.martialArtId);
+                      setGraduationNotice(null);
+                    }}
+                    className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border transition-colors cursor-pointer ${
+                      selectedArtId === g.martialArtId
+                        ? 'bg-red-950/80 border-red-500 text-white font-semibold'
+                        : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'
+                    }`}
+                    title={`Clique para selecionar e editar a graduação em ${g.martialArtName}`}
+                  >
+                    <span
+                      className="h-2 w-2 rounded-full border border-slate-500 shrink-0"
+                      style={{ backgroundColor: g.beltColorHex }}
+                    />
+                    <span>{g.martialArtName}: {g.beltName}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Notificação sobre status da graduação */}
+            {graduationNotice && (
+              <div className="p-2.5 rounded-lg bg-amber-950/40 border border-amber-500/40 text-[11px] text-amber-200 flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+                <span>{graduationNotice}</span>
+              </div>
+            )}
+
+            {/* Erro de consulta de modalidades */}
+            {artsError && (
+              <div className="p-2.5 rounded-lg bg-red-950/50 border border-red-500/50 text-[11px] text-red-200 flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 text-red-400 mt-0.5" />
+                <span>{artsError}</span>
+              </div>
+            )}
+
+            {/* Erro de consulta de faixas */}
+            {beltsError && (
+              <div className="p-2.5 rounded-lg bg-red-950/50 border border-red-500/50 text-[11px] text-red-200 flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 text-red-400 mt-0.5" />
+                <span>{beltsError}</span>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
               <div>
-                <label className="block text-slate-300 font-medium mb-1">Arte Marcial</label>
+                <label className="block text-slate-300 font-medium mb-1">
+                  Arte Marcial * {isLoadingArts && <Loader2 className="inline h-3 w-3 animate-spin text-red-400 ml-1" />}
+                </label>
                 <select
                   value={selectedArtId}
-                  onChange={(e) => setSelectedArtId(e.target.value)}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none"
+                  onChange={(e) => {
+                    setSelectedArtId(e.target.value);
+                    setSelectedBeltId('');
+                    setGraduationNotice(null);
+                  }}
+                  disabled={isLoadingArts || loadedArts.length === 0}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  {martialArts.map(m => (
-                    <option key={m.id} value={m.id}>{m.name}</option>
+                  <option value="">
+                    {isLoadingArts ? 'Carregando modalidades...' : 'Selecione a Modalidade...'}
+                  </option>
+                  {loadedArts.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
                   ))}
                 </select>
               </div>
 
               <div>
-                <label className="block text-slate-300 font-medium mb-1">Faixa / Graduação</label>
+                <label className="block text-slate-300 font-medium mb-1">
+                  Faixa / Graduação * {isLoadingBelts && <Loader2 className="inline h-3 w-3 animate-spin text-red-400 ml-1" />}
+                </label>
                 <select
                   value={selectedBeltId}
                   onChange={(e) => setSelectedBeltId(e.target.value)}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none"
+                  disabled={isLoadingBelts || !selectedArtId || loadedBelts.length === 0}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  {belts.map(b => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
+                  {!selectedArtId ? (
+                    <option value="">Selecione primeiro uma modalidade</option>
+                  ) : isLoadingBelts ? (
+                    <option value="">Carregando faixas da modalidade...</option>
+                  ) : loadedBelts.length === 0 ? (
+                    <option value="">Nenhuma faixa cadastrada nesta modalidade</option>
+                  ) : (
+                    <>
+                      <option value="">Selecione a Faixa / Graduação...</option>
+                      {loadedBelts.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name} ({b.rankType === 'dan' ? 'Dan' : 'Faixa'})
+                        </option>
+                      ))}
+                    </>
+                  )}
                 </select>
               </div>
 

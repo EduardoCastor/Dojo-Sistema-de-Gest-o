@@ -148,6 +148,20 @@ export default function App() {
           });
           setGuardians(result.guardians);
         }
+
+        // Sincronizar modalidades e graduações reais da academia ativa
+        try {
+          const [realArts, realBelts] = await Promise.all([
+            studentService.fetchMartialArts(currentTenantId),
+            studentService.fetchBeltRanks(currentTenantId),
+          ]);
+          if (isMounted) {
+            if (realArts && realArts.length > 0) setMartialArts(realArts);
+            if (realBelts && realBelts.length > 0) setBeltRanks(realBelts);
+          }
+        } catch (mErr) {
+          console.warn('Aviso ao sincronizar modalidades/faixas do Supabase:', mErr);
+        }
       } catch (err) {
         console.warn('Erro ao sincronizar alunos do banco:', err);
       } finally {

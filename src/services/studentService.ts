@@ -72,6 +72,88 @@ export interface StudentServiceResult {
 
 export const studentService = {
   /**
+   * Consulta as modalidades de artes marciais da academia informada (tenant_id) no Supabase.
+   * Filtra exclusivamente por tenant_id e status='active', ordenando pelo nome.
+   */
+  async fetchMartialArts(tenantId: string): Promise<MartialArt[]> {
+    if (!isSupabaseConfigured() || !supabase) {
+      throw new Error('Supabase não configurado');
+    }
+    if (!isValidUUID(tenantId)) {
+      throw new Error('ID da academia (tenant_id) deve ser um UUID válido no Supabase.');
+    }
+
+    const { data, error } = await supabase
+      .from('martial_arts')
+      .select('id, tenant_id, name, origin, description, governing_federation, status')
+      .eq('tenant_id', tenantId)
+      .eq('status', 'active')
+      .order('name', { ascending: true });
+
+    if (error) {
+      console.error('Erro ao consultar public.martial_arts no Supabase:', error);
+      throw new Error(`Erro ao consultar modalidades: ${error.message}`);
+    }
+
+    return (data || []).map((row: any) => ({
+      id: row.id,
+      tenantId: row.tenant_id,
+      name: row.name,
+      origin: row.origin || '',
+      description: row.description || '',
+      governingFederation: row.governing_federation || undefined,
+      status: row.status as 'active' | 'inactive',
+    }));
+  },
+
+  /**
+   * Consulta as faixas/graduações da academia informada (tenant_id) no Supabase.
+   * Filtra exclusivamente por tenant_id e martial_art_id correspondente, ordenando por order_index crescente.
+   */
+  async fetchBeltRanks(tenantId: string, martialArtId?: string): Promise<BeltRank[]> {
+    if (!isSupabaseConfigured() || !supabase) {
+      throw new Error('Supabase não configurado');
+    }
+    if (!isValidUUID(tenantId)) {
+      throw new Error('ID da academia (tenant_id) deve ser um UUID válido no Supabase.');
+    }
+
+    let query = supabase
+      .from('belt_ranks')
+      .select('id, tenant_id, martial_art_id, name, rank_type, order_index, color_hex, stripe_color_hex, min_age_years, min_practice_months, technical_requirements, requires_exam')
+      .eq('tenant_id', tenantId);
+
+    if (martialArtId) {
+      if (!isValidUUID(martialArtId)) {
+        throw new Error('ID da modalidade deve ser um UUID válido.');
+      }
+      query = query.eq('martial_art_id', martialArtId);
+    }
+
+    const { data, error } = await query.order('order_index', { ascending: true });
+
+    if (error) {
+      console.error('Erro ao consultar public.belt_ranks no Supabase:', error);
+      throw new Error(`Erro ao consultar graduações: ${error.message}`);
+    }
+
+    return (data || []).map((row: any) => ({
+      id: row.id,
+      tenantId: row.tenant_id,
+      martialArtId: row.martial_art_id,
+      name: row.name,
+      rankType: row.rank_type || 'faixa',
+      orderIndex: row.order_index,
+      colorHex: row.color_hex || '#ffffff',
+      stripeColorHex: row.stripe_color_hex || undefined,
+      minAgeYears: row.min_age_years ?? 4,
+      minPracticeMonths: row.min_practice_months ?? 0,
+      technicalRequirements: row.technical_requirements || '',
+      requiresExam: Boolean(row.requires_exam),
+    }));
+  },
+
+  /**
    * Consulta a lista de alunos da academia informada (filtrada por tenant_id e RLS).
    * Retorna os registros normalizados para o modelo utilizado na interface do React.
    */
@@ -200,17 +282,25 @@ export const studentService = {
           loadedPersons.push(parsedPerson);
         }
 
-        // Buscar graduações do aluno
-        const studentGrads = (graduationsData || [])
+        // Buscar graduações do aluno no Supabase ordenadas pela mais recente
+        // Agrupar a graduação mais recente por modalidade (suporte a múltiplas artes marciais)
+        const latestByArt = new Map<string, any>();
+        (graduationsData || [])
           .filter((g: any) => g.student_id === row.id)
-          .map((g: any) => ({
-            martialArtId: g.martial_art_id,
-            martialArtName: g.martial_art?.name || 'Artes Marciais',
-            beltId: g.belt_rank_id,
-            beltName: g.belt_rank?.name || 'Faixa Inicial',
-            beltColorHex: g.belt_rank?.color_hex || '#ffffff',
-            graduatedAt: g.graduated_at || row.enrollment_date,
-          }));
+          .sort((a: any, b: any) => new Date(b.graduated_at || 0).getTime() - new Date(a.graduated_at || 0).getTime())
+          .forEach((g: any) => {
+            if (!latestByArt.has(g.martial_art_id)) {
+              latestByArt.set(g.martial_art_id, {
+                martialArtId: g.martial_art_id,
+                martialArtName: g.martial_art?.name || 'Arte Marcial',
+                beltId: g.belt_rank_id,
+                beltName: g.belt_rank?.name || 'Faixa Cadastrada',
+                beltColorHex: g.belt_rank?.color_hex || '#ffffff',
+                graduatedAt: g.graduated_at || row.enrollment_date,
+              });
+            }
+          });
+        const studentGrads = Array.from(latestByArt.values());
 
         return {
           id: row.id,
@@ -220,16 +310,7 @@ export const studentService = {
           registrationNumber: row.registration_number,
           enrollmentDate: row.enrollment_date,
           status: row.status,
-          currentGraduations: studentGrads.length > 0 ? studentGrads : [
-            {
-              martialArtId: 'art-judo',
-              martialArtName: 'Judô',
-              beltId: 'rank-judo-branca',
-              beltName: 'Faixa Branca',
-              beltColorHex: '#ffffff',
-              graduatedAt: row.enrollment_date,
-            },
-          ],
+          currentGraduations: studentGrads,
           monthlyFee: Number(row.monthly_fee) || 0,
           notes: row.notes || undefined,
         };
@@ -348,13 +429,46 @@ export const studentService = {
       notes: null,
     } : null;
 
-    const graduationPayload = (isValidUUID(payload.martialArtId) && isValidUUID(payload.beltRankId)) ? {
-      martial_art_id: payload.martialArtId,
-      belt_rank_id: payload.beltRankId,
-      graduated_at: new Date().toISOString().split('T')[0],
-      examiner_name: 'Sensei Responsável',
-      notes: 'Graduação inicial no ato da matrícula',
-    } : null;
+    let graduationPayload: any = null;
+    if (payload.martialArtId && payload.beltRankId) {
+      if (!isValidUUID(payload.martialArtId) || !isValidUUID(payload.beltRankId)) {
+        throw new Error('A modalidade ou faixa selecionada deve ser um UUID válido no Supabase.');
+      }
+
+      // Validar que a modalidade pertence à academia ativa e está ativa
+      const { data: validArt, error: artErr } = await supabase
+        .from('martial_arts')
+        .select('id, name')
+        .eq('id', payload.martialArtId)
+        .eq('tenant_id', payload.tenantId)
+        .eq('status', 'active')
+        .maybeSingle();
+
+      if (artErr || !validArt) {
+        throw new Error('A modalidade selecionada não pertence à academia ativa ou não está ativa.');
+      }
+
+      // Validar que a faixa pertence à mesma academia e modalidade
+      const { data: validBelt, error: beltErr } = await supabase
+        .from('belt_ranks')
+        .select('id, name, color_hex')
+        .eq('id', payload.beltRankId)
+        .eq('tenant_id', payload.tenantId)
+        .eq('martial_art_id', payload.martialArtId)
+        .maybeSingle();
+
+      if (beltErr || !validBelt) {
+        throw new Error('A graduação selecionada não pertence à modalidade ou à academia ativa.');
+      }
+
+      graduationPayload = {
+        martial_art_id: payload.martialArtId,
+        belt_rank_id: payload.beltRankId,
+        graduated_at: new Date().toISOString().split('T')[0],
+        examiner_name: 'Sensei Responsável',
+        notes: 'Graduação inicial no ato da matrícula',
+      };
+    }
 
     // Tentar executar via RPC atômica register_student_atomic
     try {
@@ -826,71 +940,138 @@ export const studentService = {
 
     // 4. Se a graduação mudou e são UUIDs válidos
 
-    // 4. Persistir a graduação do aluno no Supabase
-
+    // 4. Persistir a graduação do aluno no Supabase com validações estritas
     if (
       !isValidUUID(payload.martialArtId) ||
       !isValidUUID(payload.beltRankId)
     ) {
       throw new Error(
-        'A modalidade ou faixa selecionada não possui um ID válido ' +
-        'no Supabase. Cadastre a modalidade e suas graduações no banco.'
+        'A modalidade ou graduação selecionada não possui um UUID válido no Supabase. ' +
+        'Cadastre a modalidade e suas graduações no banco.'
       );
     }
 
-    // Consultar a graduação mais recente do aluno
-    const { data: existingGrad, error: fetchGradError } =
-      await supabase
-        .from('student_graduations')
-        .select('id, martial_art_id, belt_rank_id, graduated_at')
-        .eq('student_id', payload.studentId)
-        .eq('tenant_id', payload.tenantId)
-        .order('graduated_at', { ascending: false })
-        .limit(1);
+    // 4.1. Validar que a modalidade pertence à academia ativa e está com status ativo
+    const { data: validArt, error: artValError } = await supabase
+      .from('martial_arts')
+      .select('id, tenant_id, name, status')
+      .eq('id', payload.martialArtId)
+      .eq('tenant_id', payload.tenantId)
+      .eq('status', 'active')
+      .maybeSingle();
+
+    if (artValError) {
+      throw new Error('Erro ao validar modalidade no Supabase: ' + artValError.message);
+    }
+    if (!validArt) {
+      throw new Error('A modalidade selecionada não pertence à academia ativa ou não está ativa.');
+    }
+
+    // 4.2. Validar que a graduação pertence à mesma academia e à modalidade selecionada
+    const { data: validBelt, error: beltValError } = await supabase
+      .from('belt_ranks')
+      .select('id, tenant_id, martial_art_id, name, color_hex')
+      .eq('id', payload.beltRankId)
+      .eq('tenant_id', payload.tenantId)
+      .eq('martial_art_id', payload.martialArtId)
+      .maybeSingle();
+
+    if (beltValError) {
+      throw new Error('Erro ao validar graduação no Supabase: ' + beltValError.message);
+    }
+    if (!validBelt) {
+      throw new Error('A graduação selecionada não pertence à modalidade escolhida ou à academia ativa.');
+    }
+
+    // 4.3. Consultar a graduação mais recente do aluno especificamente para a modalidade selecionada
+    const { data: existingGrads, error: fetchGradError } = await supabase
+      .from('student_graduations')
+      .select('id, martial_art_id, belt_rank_id, graduated_at')
+      .eq('student_id', payload.studentId)
+      .eq('tenant_id', payload.tenantId)
+      .eq('martial_art_id', payload.martialArtId)
+      .order('graduated_at', { ascending: false })
+      .limit(1);
 
     if (fetchGradError) {
       throw new Error(
-        'Erro ao consultar graduação: ' + fetchGradError.message
+        'Erro ao consultar histórico de graduação: ' + fetchGradError.message
       );
     }
 
-    const currentGrad = existingGrad?.[0];
+    const currentGradForModality = existingGrads?.[0];
 
     const graduationChanged =
-      !currentGrad ||
-      currentGrad.martial_art_id !== payload.martialArtId ||
-      currentGrad.belt_rank_id !== payload.beltRankId;
+      !currentGradForModality ||
+      currentGradForModality.belt_rank_id !== payload.beltRankId;
 
     if (graduationChanged) {
-      const { data: savedGrad, error: saveGradError } =
-        await supabase
-          .from('student_graduations')
-          .insert({
-            tenant_id: payload.tenantId,
-            student_id: payload.studentId,
-            martial_art_id: payload.martialArtId,
-            belt_rank_id: payload.beltRankId,
-            graduated_at: new Date()
-              .toISOString()
-              .split('T')[0],
-            examiner_name: 'Atualização administrativa'
-          })
-          .select('id')
-          .single();
+      // Inserir novo registro no histórico sem excluir nem alterar os registros anteriores
+      const { data: savedGrad, error: saveGradError } = await supabase
+        .from('student_graduations')
+        .insert({
+          tenant_id: payload.tenantId,
+          student_id: payload.studentId,
+          martial_art_id: payload.martialArtId,
+          belt_rank_id: payload.beltRankId,
+          graduated_at: new Date().toISOString().split('T')[0],
+          examiner_name: 'Atualização administrativa',
+          notes: 'Graduação atualizada no cadastro do aluno',
+        })
+        .select('id')
+        .single();
 
       if (saveGradError) {
         throw new Error(
-          'Erro ao salvar Faixa/Graduação: ' +
-          saveGradError.message
+          'Erro ao salvar Faixa/Graduação no Supabase: ' + saveGradError.message
         );
       }
 
       if (!savedGrad) {
-        throw new Error(
-          'A graduação não foi confirmada pelo Supabase.'
-        );
+        throw new Error('A graduação não pôde ser confirmada pelo Supabase.');
       }
     }
+
+    // 4.4. Consultar todas as graduações vigentes do aluno (uma por modalidade) para manter o estado atualizado
+    const { data: allStudentGrads } = await supabase
+      .from('student_graduations')
+      .select(`
+        id,
+        martial_art_id,
+        belt_rank_id,
+        graduated_at,
+        martial_art:martial_arts (id, name),
+        belt_rank:belt_ranks (id, name, color_hex)
+      `)
+      .eq('student_id', payload.studentId)
+      .eq('tenant_id', payload.tenantId)
+      .order('graduated_at', { ascending: false });
+
+    const latestByArtMap = new Map<string, any>();
+    // Garante que a recém-atualizada esteja presente
+    latestByArtMap.set(payload.martialArtId, {
+      martialArtId: payload.martialArtId,
+      martialArtName: validArt.name,
+      beltId: payload.beltRankId,
+      beltName: validBelt.name,
+      beltColorHex: validBelt.color_hex || '#ffffff',
+      graduatedAt: new Date().toISOString().split('T')[0],
+    });
+
+    (allStudentGrads || []).forEach((g: any) => {
+      if (!latestByArtMap.has(g.martial_art_id)) {
+        latestByArtMap.set(g.martial_art_id, {
+          martialArtId: g.martial_art_id,
+          martialArtName: g.martial_art?.name || 'Arte Marcial',
+          beltId: g.belt_rank_id,
+          beltName: g.belt_rank?.name || 'Faixa',
+          beltColorHex: g.belt_rank?.color_hex || '#ffffff',
+          graduatedAt: g.graduated_at || new Date().toISOString().split('T')[0],
+        });
+      }
+    });
+
+    const finalCurrentGraduations = Array.from(latestByArtMap.values());
 
     // 5. Registrar log de auditoria
     try {
@@ -934,16 +1115,7 @@ export const studentService = {
       registrationNumber: updatedStudentData.registration_number,
       enrollmentDate: updatedStudentData.enrollment_date,
       status: updatedStudentData.status,
-      currentGraduations: [
-        {
-          martialArtId: payload.selectedArt?.id || payload.martialArtId,
-          martialArtName: payload.selectedArt?.name || 'Judô',
-          beltId: payload.selectedBelt?.id || payload.beltRankId,
-          beltName: payload.selectedBelt?.name || 'Faixa Atualizada',
-          beltColorHex: payload.selectedBelt?.colorHex || '#ffffff',
-          graduatedAt: updatedStudentData.enrollment_date,
-        },
-      ],
+      currentGraduations: finalCurrentGraduations,
       monthlyFee: Number(updatedStudentData.monthly_fee) || payload.monthlyFee,
       notes: updatedStudentData.notes || undefined,
     };

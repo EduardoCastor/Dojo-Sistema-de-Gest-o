@@ -25,7 +25,13 @@ export const ModalitiesView: React.FC<ModalitiesViewProps> = ({
   const [newMinMonths, setNewMinMonths] = useState(10);
   const [newRequirements, setNewRequirements] = useState('');
 
-  const activeArt = martialArts.find(m => m.id === selectedArtId) || martialArts[0];
+  const activeArt: MartialArt = martialArts.find(m => m.id === selectedArtId) || martialArts[0] || {
+    id: 'art-judo',
+    tenantId: 'tenant-kodokan',
+    name: 'Judô',
+    description: 'Caminho Suave',
+    active: true,
+  };
   const artBelts = beltRanks
     .filter(b => b.martialArtId === selectedArtId)
     .sort((a, b) => a.orderIndex - b.orderIndex);
@@ -36,7 +42,7 @@ export const ModalitiesView: React.FC<ModalitiesViewProps> = ({
 
     const rank: BeltRank = {
       id: `rank-${Date.now()}`,
-      tenantId: activeArt.tenantId,
+      tenantId: activeArt.tenantId || 'tenant-kodokan',
       martialArtId: selectedArtId,
       name: newBeltName,
       rankType: 'faixa',

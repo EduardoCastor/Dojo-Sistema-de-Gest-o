@@ -42,8 +42,8 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
   onClose,
   tenantId,
   branchId,
-  belts,
-  martialArts,
+  belts = [],
+  martialArts = [],
   studentToEdit,
   personToEdit,
   guardianRelToEdit,
@@ -51,7 +51,46 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
   onSave,
   onUpdate,
 }) => {
-  const isEditing = Boolean(studentToEdit && personToEdit);
+  const isEditing = Boolean(studentToEdit);
+
+  const availableArts: MartialArt[] = (martialArts && martialArts.length > 0) ? martialArts : [
+    { id: 'art-judo', tenantId, name: 'Judô', origin: 'Japão', description: 'Caminho Suave', status: 'active' },
+    { id: 'art-bjj', tenantId, name: 'Jiu-Jítsu Brasileiro', origin: 'Brasil', description: 'Arte Suave', status: 'active' },
+    { id: 'art-karate', tenantId, name: 'Karatê', origin: 'Japão', description: 'Mãos Vazias', status: 'active' },
+  ];
+
+  const availableBelts: BeltRank[] = (belts && belts.length > 0) ? belts : [
+    { id: 'rank-judo-branca', tenantId, martialArtId: 'art-judo', name: 'Faixa Branca', colorHex: '#ffffff', orderIndex: 1, rankType: 'faixa', minAgeYears: 4, minPracticeMonths: 0, technicalRequirements: 'Fundamentos', requiresExam: false },
+    { id: 'rank-judo-cinza', tenantId, martialArtId: 'art-judo', name: 'Faixa Cinza', colorHex: '#9ca3af', orderIndex: 2, rankType: 'faixa', minAgeYears: 6, minPracticeMonths: 6, technicalRequirements: 'Ukemi e Nage-waza básicos', requiresExam: true },
+    { id: 'rank-judo-azul', tenantId, martialArtId: 'art-judo', name: 'Faixa Azul', colorHex: '#2563eb', orderIndex: 3, rankType: 'faixa', minAgeYears: 8, minPracticeMonths: 12, technicalRequirements: 'Gokyo Dai-ikkyo', requiresExam: true },
+    { id: 'rank-judo-amarela', tenantId, martialArtId: 'art-judo', name: 'Faixa Amarela', colorHex: '#eab308', orderIndex: 4, rankType: 'faixa', minAgeYears: 9, minPracticeMonths: 12, technicalRequirements: 'Gokyo Dai-nikyo', requiresExam: true },
+    { id: 'rank-judo-laranja', tenantId, martialArtId: 'art-judo', name: 'Faixa Laranja', colorHex: '#f97316', orderIndex: 5, rankType: 'faixa', minAgeYears: 10, minPracticeMonths: 12, technicalRequirements: 'Gokyo Dai-sankyo', requiresExam: true },
+    { id: 'rank-judo-verde', tenantId, martialArtId: 'art-judo', name: 'Faixa Verde', colorHex: '#22c55e', orderIndex: 6, rankType: 'faixa', minAgeYears: 12, minPracticeMonths: 12, technicalRequirements: 'Gokyo Dai-yonkyo', requiresExam: true },
+    { id: 'rank-judo-roxa', tenantId, martialArtId: 'art-judo', name: 'Faixa Roxa', colorHex: '#9333ea', orderIndex: 7, rankType: 'faixa', minAgeYears: 14, minPracticeMonths: 18, technicalRequirements: 'Gokyo Gokyo', requiresExam: true },
+    { id: 'rank-judo-marrom', tenantId, martialArtId: 'art-judo', name: 'Faixa Marrom', colorHex: '#78350f', orderIndex: 8, rankType: 'faixa', minAgeYears: 15, minPracticeMonths: 24, technicalRequirements: 'Nage-no-kata completo', requiresExam: true },
+    { id: 'rank-judo-preta', tenantId, martialArtId: 'art-judo', name: 'Faixa Preta', colorHex: '#000000', orderIndex: 9, rankType: 'faixa', minAgeYears: 18, minPracticeMonths: 36, technicalRequirements: 'Shodan Shinsa', requiresExam: true },
+  ];
+
+  const activePersonToEdit: Person = personToEdit || {
+    id: studentToEdit?.personId || `person-${studentToEdit?.id || Date.now()}`,
+    tenantId: studentToEdit?.tenantId || tenantId,
+    fullName: '',
+    socialName: undefined,
+    cpf: '',
+    birthDate: '2014-05-10',
+    gender: 'male',
+    phone: '',
+    email: '',
+    address: {
+      street: '',
+      number: '',
+      neighborhood: '',
+      city: 'São Paulo',
+      state: 'SP',
+      zipCode: '',
+    },
+    createdAt: new Date().toISOString(),
+  };
 
   // Student Personal Data
   const [fullName, setFullName] = useState('');
@@ -66,8 +105,8 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
   const [studentStatus, setStudentStatus] = useState<'active' | 'inactive' | 'suspended' | 'dropped'>('active');
 
   // Belt & Martial Art
-  const [selectedArtId, setSelectedArtId] = useState(martialArts[0]?.id || 'art-judo');
-  const [selectedBeltId, setSelectedBeltId] = useState(belts[0]?.id || 'rank-judo-branca');
+  const [selectedArtId, setSelectedArtId] = useState(availableArts[0]?.id || 'art-judo');
+  const [selectedBeltId, setSelectedBeltId] = useState(availableBelts[0]?.id || 'rank-judo-branca');
 
   // Guardian Data (if minor)
   const [hasGuardian, setHasGuardian] = useState(true);
@@ -87,21 +126,22 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
     setError('');
     setIsSubmitting(false);
 
-    if (studentToEdit && personToEdit) {
-      setFullName(personToEdit.fullName || '');
-      setSocialName(personToEdit.socialName || '');
-      setCpf(personToEdit.cpf || '');
-      setBirthDate(personToEdit.birthDate || '2014-05-10');
-      setGender(personToEdit.gender || 'male');
-      setPhone(personToEdit.phone || '');
-      setEmail(personToEdit.email || '');
-      setCity(personToEdit.address?.city || 'São Paulo');
+    if (studentToEdit) {
+      const p = activePersonToEdit;
+      setFullName(p.fullName || '');
+      setSocialName(p.socialName || '');
+      setCpf(p.cpf || '');
+      setBirthDate(p.birthDate || '2014-05-10');
+      setGender(p.gender || 'male');
+      setPhone(p.phone || '');
+      setEmail(p.email || '');
+      setCity(p.address?.city || 'São Paulo');
       setMonthlyFee(String(studentToEdit.monthlyFee ?? 220));
       setStudentStatus(studentToEdit.status || 'active');
 
-      const initialArtId = studentToEdit.currentGraduations?.[0]?.martialArtId || martialArts[0]?.id || 'art-judo';
+      const initialArtId = studentToEdit.currentGraduations?.[0]?.martialArtId || availableArts[0]?.id || 'art-judo';
       setSelectedArtId(initialArtId);
-      const initialBeltId = studentToEdit.currentGraduations?.[0]?.beltId || belts[0]?.id || 'rank-judo-branca';
+      const initialBeltId = studentToEdit.currentGraduations?.[0]?.beltId || availableBelts[0]?.id || 'rank-judo-branca';
       setSelectedBeltId(initialBeltId);
 
       if (guardianPersonToEdit) {
@@ -112,7 +152,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
         setGuardianEmail(guardianPersonToEdit.email || '');
         setRelationshipType(guardianRelToEdit?.relationshipLabel || 'Pai');
       } else {
-        const isMinor = calculateAge(personToEdit.birthDate) < 18;
+        const isMinor = calculateAge(p.birthDate) < 18;
         setHasGuardian(isMinor);
         setGuardianName('');
         setGuardianCpf('');
@@ -132,8 +172,8 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       setCity('São Paulo');
       setMonthlyFee('220');
       setStudentStatus('active');
-      setSelectedArtId(martialArts[0]?.id || 'art-judo');
-      setSelectedBeltId(belts[0]?.id || 'rank-judo-branca');
+      setSelectedArtId(availableArts[0]?.id || 'art-judo');
+      setSelectedBeltId(availableBelts[0]?.id || 'rank-judo-branca');
       setHasGuardian(true);
       setGuardianName('');
       setGuardianCpf('');
@@ -163,24 +203,25 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
 
     setIsSubmitting(true);
 
-    const chosenBelt = belts.find(b => b.id === selectedBeltId) || belts[0];
-    const chosenArt = martialArts.find(m => m.id === selectedArtId) || martialArts[0];
+    const chosenBelt = belts.find(b => b.id === selectedBeltId) || availableBelts.find(b => b.id === selectedBeltId) || availableBelts[0];
+    const chosenArt = martialArts.find(m => m.id === selectedArtId) || availableArts.find(m => m.id === selectedArtId) || availableArts[0];
 
     // ==========================================
     // FLUXO DE EDIÇÃO DE ALUNO EXISTENTE
     // ==========================================
-    if (isEditing && studentToEdit && personToEdit) {
+    if (isEditing && studentToEdit) {
+      const p = personToEdit || activePersonToEdit;
       const updatedPerson: Person = {
-        ...personToEdit,
+        ...p,
         fullName: fullName.trim(),
         socialName: socialName.trim() || undefined,
-        cpf: cpf || personToEdit.cpf,
+        cpf: cpf || p.cpf,
         birthDate,
         gender,
-        phone: phone || personToEdit.phone,
-        email: email || personToEdit.email,
+        phone: phone || p.phone,
+        email: email || p.email,
         address: {
-          ...personToEdit.address,
+          ...(p.address || {}),
           city,
         },
       };
@@ -234,7 +275,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
 
       const updatePayload: UpdateStudentPayload = {
         studentId: studentToEdit.id,
-        personId: personToEdit.id,
+        personId: p.id,
         tenantId,
         branchId,
         fullName: fullName.trim(),

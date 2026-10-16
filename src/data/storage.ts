@@ -148,7 +148,8 @@ export class DataStore {
 
   static getMartialArts(tenantId: string): MartialArt[] {
     const all = load('martial_arts', INITIAL_MARTIAL_ARTS);
-    return all.filter(m => m.tenantId === tenantId);
+    const filtered = all.filter(m => m.tenantId === tenantId);
+    return filtered.length > 0 ? filtered : all.filter(m => m.tenantId === 'tenant-kodokan');
   }
 
   static saveMartialArts(arts: MartialArt[]): void {
@@ -157,7 +158,8 @@ export class DataStore {
 
   static getBeltRanks(tenantId: string): BeltRank[] {
     const all = load('belt_ranks', INITIAL_BELT_RANKS);
-    return all.filter(b => b.tenantId === tenantId);
+    const filtered = all.filter(b => b.tenantId === tenantId);
+    return filtered.length > 0 ? filtered : all.filter(b => b.tenantId === 'tenant-kodokan');
   }
 
   static saveBeltRanks(ranks: BeltRank[]): void {

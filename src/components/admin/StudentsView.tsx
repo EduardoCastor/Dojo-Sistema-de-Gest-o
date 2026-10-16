@@ -67,10 +67,33 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [profileTab, setProfileTab] = useState<'id' | 'guardians' | 'anthropometry' | 'health' | 'ranks' | 'classes'>('id');
 
+  const getStudentPerson = (student: Student): Person => {
+    const found = persons.find((p) => p.id === student.personId);
+    if (found) return found;
+    return {
+      id: student.personId || `person-${student.id}`,
+      tenantId: student.tenantId,
+      fullName: `Aluno ${student.registrationNumber || student.id.substring(0, 8)}`,
+      cpf: '',
+      birthDate: '2010-01-01',
+      gender: 'other',
+      phone: '',
+      email: '',
+      address: {
+        street: '',
+        number: '',
+        neighborhood: '',
+        city: 'São Paulo',
+        state: 'SP',
+        zipCode: '',
+      },
+      createdAt: student.enrollmentDate || new Date().toISOString(),
+    };
+  };
+
   // Filter students
   const filteredStudents = students.filter((s) => {
-    const person = persons.find(p => p.id === s.personId);
-    if (!person) return false;
+    const person = getStudentPerson(s);
 
     const matchesSearch =
       (person.fullName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -82,10 +105,6 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
     return matchesSearch && matchesStatus;
   });
-
-  const getStudentPerson = (student: Student) => {
-    return persons.find(p => p.id === student.personId);
-  };
 
   const getStudentGuardians = (studentId: string) => {
     const rels = guardians.filter(g => g.studentId === studentId);
@@ -305,11 +324,11 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
             {/* Profile Header */}
             <div className="flex items-start gap-4 pb-4 border-b border-slate-800">
               <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-slate-800 border border-slate-700 text-red-400 text-lg font-bold">
-                {activePerson.fullName.substring(0, 2).toUpperCase()}
+                {activePerson.fullName ? activePerson.fullName.substring(0, 2).toUpperCase() : 'AL'}
               </div>
               <div className="flex-1">
                 <div className="flex items-center gap-2">
-                  <h3 className="text-lg font-bold text-white">{activePerson.fullName}</h3>
+                  <h3 className="text-lg font-bold text-white">{activePerson.fullName || 'Aluno'}</h3>
                   <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-400 border border-emerald-500/30">
                     {selectedStudent.status === 'active' ? 'Ativo' : 'Inativo'}
                   </span>
@@ -394,10 +413,10 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
                   <div className="p-3 rounded-lg border border-slate-800 bg-slate-950/60 space-y-2">
                     <div className="font-semibold text-slate-300">Endereço Residencial:</div>
-                    <div className="text-slate-400">{activePerson.address.street}, {activePerson.address.number}</div>
-                    <div className="text-slate-400">Bairro: {activePerson.address.neighborhood}</div>
-                    <div className="text-slate-400">{activePerson.address.city} - {activePerson.address.state}</div>
-                    <div className="text-slate-400 font-mono">CEP: {activePerson.address.zipCode}</div>
+                    <div className="text-slate-400">{activePerson.address?.street || '-'}, {activePerson.address?.number || 'S/N'}</div>
+                    <div className="text-slate-400">Bairro: {activePerson.address?.neighborhood || '-'}</div>
+                    <div className="text-slate-400">{activePerson.address?.city || 'São Paulo'} - {activePerson.address?.state || 'SP'}</div>
+                    <div className="text-slate-400 font-mono">CEP: {activePerson.address?.zipCode || '-'}</div>
                   </div>
                 </div>
               )}
@@ -530,7 +549,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                       <div className="p-3 rounded-lg border border-slate-800 bg-slate-950/60 space-y-2">
                         <div className="font-semibold text-slate-200">Condições Clínicas & Alergias</div>
                         <div className="flex flex-wrap gap-1.5">
-                          {activeHealth.conditions.length > 0 ? (
+                          {(activeHealth.conditions || []).length > 0 ? (
                             activeHealth.conditions.map((c, i) => (
                               <span key={i} className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 text-[11px]">
                                 {c}
@@ -541,7 +560,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                           )}
                         </div>
                         <div className="text-[11px] text-slate-400 pt-1">
-                          Alergias conhecidas: {activeHealth.allergies.join(', ') || 'Nenhuma informada.'}
+                          Alergias conhecidas: {(activeHealth.allergies || []).join(', ') || 'Nenhuma informada.'}
                         </div>
                       </div>
 
@@ -560,7 +579,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                             </span>
                           )}
                         </div>
-                        {activeHealth.medicalDocs.map((doc) => (
+                        {(activeHealth.medicalDocs || []).map((doc) => (
                           <div key={doc.id} className="flex items-center justify-between p-2 rounded bg-slate-900 border border-slate-800">
                             <div className="flex items-center gap-2">
                               <FileCheck className="h-4 w-4 text-emerald-400" />

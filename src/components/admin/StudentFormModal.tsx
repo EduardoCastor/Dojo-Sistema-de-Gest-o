@@ -425,11 +425,14 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
         };
       }
 
+      const effectiveTenantId = isValidUUID(studentToEdit?.tenantId) ? studentToEdit.tenantId : tenantId;
+      const effectiveBranchId = isValidUUID(studentToEdit?.branchId) ? studentToEdit.branchId : branchId;
+
       const updatePayload: UpdateStudentPayload = {
         studentId: studentToEdit.id,
         personId: p.id,
-        tenantId,
-        branchId,
+        tenantId: effectiveTenantId,
+        branchId: effectiveBranchId,
         fullName: fullName.trim(),
         socialName: socialName.trim() || undefined,
         birthDate,

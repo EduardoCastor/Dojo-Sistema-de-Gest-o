@@ -572,7 +572,8 @@ export default function App() {
     payloadDetails?: UpdateStudentPayload
   ) => {
     // 1. Prioridade para persistência real no Supabase
-    if (isSupabaseConfigured() && supabase && isValidUUID(currentTenantId) && payloadDetails) {
+    const activeTenantId = payloadDetails?.tenantId || currentTenantId;
+    if (isSupabaseConfigured() && supabase && isValidUUID(activeTenantId) && payloadDetails) {
       try {
         const result = await studentService.updateStudent(payloadDetails);
 

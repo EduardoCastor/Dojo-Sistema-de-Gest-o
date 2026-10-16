@@ -1006,29 +1006,66 @@ export const studentService = {
       currentGradForModality.belt_rank_id !== payload.beltRankId;
 
     if (graduationChanged) {
-      // Inserir novo registro no histórico sem excluir nem alterar os registros anteriores
-      const { data: savedGrad, error: saveGradError } = await supabase
-        .from('student_graduations')
-        .insert({
-          tenant_id: payload.tenantId,
-          student_id: payload.studentId,
-          martial_art_id: payload.martialArtId,
-          belt_rank_id: payload.beltRankId,
-          graduated_at: new Date().toISOString().split('T')[0],
-          examiner_name: 'Atualização administrativa',
-          notes: 'Graduação atualizada no cadastro do aluno',
-        })
-        .select('id')
-        .single();
+      let rpcSucceeded = false;
 
-      if (saveGradError) {
-        throw new Error(
-          'Erro ao salvar Faixa/Graduação no Supabase: ' + saveGradError.message
-        );
+      // Tentativa 1: Executar via função RPC atômica record_student_graduation (imune a inconsistências de RLS no cliente)
+      try {
+        const { data: rpcData, error: rpcError } = await supabase.rpc('record_student_graduation', {
+          p_tenant_id: payload.tenantId,
+          p_student_id: payload.studentId,
+          p_martial_art_id: payload.martialArtId,
+          p_belt_rank_id: payload.beltRankId,
+          p_examiner_name: 'Atualização administrativa',
+          p_notes: 'Graduação atualizada no cadastro do aluno',
+        });
+
+        if (!rpcError && rpcData?.id) {
+          rpcSucceeded = true;
+        } else if (rpcError) {
+          const errMsg = rpcError.message || '';
+          // Se a função não existe ainda no Supabase (código 42883 ou mensagem 'does not exist'), prosseguir para o fallback
+          if (!errMsg.includes('does not exist') && !errMsg.includes('function') && rpcError.code !== '42883') {
+            throw new Error('Falha ao registrar graduação via RPC: ' + errMsg);
+          }
+        }
+      } catch (rpcErr: any) {
+        const msg = rpcErr.message || '';
+        if (!msg.includes('does not exist') && !msg.includes('function') && rpcErr.code !== '42883') {
+          throw rpcErr;
+        }
       }
 
-      if (!savedGrad) {
-        throw new Error('A graduação não pôde ser confirmada pelo Supabase.');
+      // Tentativa 2: Fallback para INSERT direto em student_graduations
+      if (!rpcSucceeded) {
+        const { data: insertData, error: saveGradError } = await supabase
+          .from('student_graduations')
+          .insert({
+            tenant_id: payload.tenantId,
+            student_id: payload.studentId,
+            martial_art_id: payload.martialArtId,
+            belt_rank_id: payload.beltRankId,
+            graduated_at: new Date().toISOString().split('T')[0],
+            examiner_name: 'Atualização administrativa',
+            notes: 'Graduação atualizada no cadastro do aluno',
+          })
+          .select('id');
+
+        if (saveGradError) {
+          const isRlsError =
+            saveGradError.code === '42501' ||
+            saveGradError.message?.toLowerCase().includes('row-level security') ||
+            saveGradError.message?.toLowerCase().includes('violates row-level security policy') ||
+            saveGradError.message?.toLowerCase().includes('permission denied');
+
+          if (isRlsError) {
+            throw new Error(
+              'Erro de Permissão (RLS) no Supabase: A tabela "student_graduations" bloqueou a gravação da graduação. ' +
+              'Certifique-se de que seu usuário possui papel de staff ativo nesta academia e execute o script SQL da migration 07_student_graduations_rls_and_rpc.sql no SQL Editor do Supabase.'
+            );
+          }
+
+          throw new Error('Erro ao salvar Faixa/Graduação no Supabase: ' + saveGradError.message);
+        }
       }
     }
 

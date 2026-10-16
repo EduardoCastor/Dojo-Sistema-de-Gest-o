@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings, Save, ShieldAlert, Sparkles, Check, Clock } from 'lucide-react';
+import { Settings, Save, ShieldAlert, Sparkles, Check, Clock, Upload, Image, Trash2, Building2 } from 'lucide-react';
 import { Tenant, SaaSPlan } from '../../types';
 
 interface SettingsViewProps {
@@ -20,13 +20,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [cnpj, setCnpj] = useState(tenant.cnpjOrCpf);
   const [email, setEmail] = useState(tenant.email);
   const [phone, setPhone] = useState(tenant.phone);
-  const [dueDay, setDueDay] = useState(tenant.settings.defaultDueDay);
-  const [familyDiscount, setFamilyDiscount] = useState(tenant.settings.familyDiscount2ndMember);
-  const [multiArtDiscount, setMultiArtDiscount] = useState(tenant.settings.multiArtDiscount);
-  const [penaltyRate, setPenaltyRate] = useState(tenant.settings.penaltyRate);
+  const [logoUrl, setLogoUrl] = useState(tenant.logoUrl || '');
+  const [dueDay, setDueDay] = useState(tenant.settings?.defaultDueDay ?? 10);
+  const [familyDiscount, setFamilyDiscount] = useState(tenant.settings?.familyDiscount2ndMember ?? 15);
+  const [multiArtDiscount, setMultiArtDiscount] = useState(tenant.settings?.multiArtDiscount ?? 20);
+  const [penaltyRate, setPenaltyRate] = useState(tenant.settings?.penaltyRate ?? 2);
   const [savedSuccess, setSavedSuccess] = useState(false);
 
   const currentPlan = plans.find(p => p.id === tenant.planId) || plans[0];
+
+  const handleLogoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      alert('A imagem deve ter no máximo 2MB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setLogoUrl(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,8 +52,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       cnpjOrCpf: cnpj,
       email,
       phone,
+      logoUrl: logoUrl || undefined,
       settings: {
-        ...tenant.settings,
+        ...(tenant.settings || {}),
         defaultDueDay: Number(dueDay),
         familyDiscount2ndMember: Number(familyDiscount),
         multiArtDiscount: Number(multiArtDiscount),
@@ -116,6 +132,60 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 onChange={(e) => setLegalName(e.target.value)}
                 className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none"
               />
+            </div>
+          </div>
+
+          {/* Logomarca da Academia */}
+          <div className="p-3.5 rounded-xl border border-slate-700/80 bg-slate-950/60 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="block text-slate-200 font-semibold text-xs flex items-center gap-1.5">
+                <Image className="h-4 w-4 text-red-400" />
+                <span>Logomarca Oficial do Dojo (aparece no cabeçalho dos relatórios)</span>
+              </label>
+              <span className="text-[10px] text-slate-400">PNG, JPG, SVG ou WebP</span>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <div className="h-16 w-16 rounded-xl border-2 border-dashed border-slate-700 bg-slate-900 flex items-center justify-center overflow-hidden shrink-0 shadow-inner">
+                {logoUrl ? (
+                  <img src={logoUrl} alt="Logo" className="h-full w-full object-contain p-1" />
+                ) : (
+                  <Building2 className="h-7 w-7 text-slate-600" />
+                )}
+              </div>
+
+              <div className="flex-1 space-y-2">
+                <div className="flex items-center gap-2">
+                  <label className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-medium text-slate-200 hover:text-white transition-colors shadow-sm">
+                    <Upload className="h-3.5 w-3.5 text-red-400" />
+                    <span>Upload de Logo</span>
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                      onChange={handleLogoFileChange}
+                      className="hidden"
+                    />
+                  </label>
+
+                  {logoUrl && (
+                    <button
+                      type="button"
+                      onClick={() => setLogoUrl('')}
+                      className="p-1.5 rounded-lg border border-red-900/40 bg-red-950/40 text-red-400 hover:text-red-300 hover:bg-red-900/40 transition-colors"
+                      title="Remover logotipo"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  value={logoUrl.startsWith('data:') ? '' : logoUrl}
+                  onChange={(e) => setLogoUrl(e.target.value)}
+                  placeholder="Ou insira a URL da logomarca (https://...)"
+                  className="w-full rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
+                />
+              </div>
             </div>
           </div>
 

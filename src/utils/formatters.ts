@@ -45,19 +45,24 @@ export function formatDateTimeBR(dateInput: string | Date | undefined | null): s
   }
 }
 
-export function calculateAge(birthDateStr: string): number {
+export function calculateAge(birthDateStr?: string | null): number {
   if (!birthDateStr) return 0;
-  const birth = new Date(birthDateStr + 'T12:00:00');
-  const now = new Date();
-  let age = now.getFullYear() - birth.getFullYear();
-  const m = now.getMonth() - birth.getMonth();
-  if (m < 0 || (m === 0 && now.getDate() < birth.getDate())) {
-    age--;
+  try {
+    const birth = new Date(birthDateStr + (birthDateStr.length === 10 ? 'T12:00:00' : ''));
+    if (isNaN(birth.getTime())) return 0;
+    const now = new Date();
+    let age = now.getFullYear() - birth.getFullYear();
+    const m = now.getMonth() - birth.getMonth();
+    if (m < 0 || (m === 0 && now.getDate() < birth.getDate())) {
+      age--;
+    }
+    return Math.max(0, age);
+  } catch {
+    return 0;
   }
-  return Math.max(0, age);
 }
 
-export function calculateBMI(weightKg: number, heightCm: number): { bmi: number; classification: string } {
+export function calculateBMI(weightKg?: number | null, heightCm?: number | null): { bmi: number; classification: string } {
   if (!weightKg || !heightCm || heightCm <= 0) return { bmi: 0, classification: 'Não avaliado' };
   const heightM = heightCm / 100;
   const bmi = Number((weightKg / (heightM * heightM)).toFixed(1));
@@ -71,20 +76,23 @@ export function calculateBMI(weightKg: number, heightCm: number): { bmi: number;
   return { bmi, classification };
 }
 
-export function formatCPF(cpf: string): string {
-  const clean = cpf.replace(/\D/g, '');
+export function formatCPF(cpf?: string | null): string {
+  if (!cpf) return '-';
+  const clean = String(cpf).replace(/\D/g, '');
   if (clean.length !== 11) return cpf;
   return clean.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
 }
 
-export function formatCNPJ(cnpj: string): string {
-  const clean = cnpj.replace(/\D/g, '');
+export function formatCNPJ(cnpj?: string | null): string {
+  if (!cnpj) return '-';
+  const clean = String(cnpj).replace(/\D/g, '');
   if (clean.length !== 14) return cnpj;
   return clean.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5');
 }
 
-export function formatPhoneBR(phone: string): string {
-  const clean = phone.replace(/\D/g, '');
+export function formatPhoneBR(phone?: string | null): string {
+  if (!phone) return '-';
+  const clean = String(phone).replace(/\D/g, '');
   if (clean.length === 11) {
     return clean.replace(/(\d{2})(\d{5})(\d{4})/, '($1) $2-$3');
   } else if (clean.length === 10) {

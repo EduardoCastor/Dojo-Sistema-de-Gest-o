@@ -144,7 +144,7 @@ export const AttendanceModal: React.FC<AttendanceModalProps> = ({
               const person = persons.find(p => p.id === s.personId);
               const currentStatus = statusMap[s.id]?.status || 'present';
               const currentNotes = statusMap[s.id]?.notes || '';
-              const belt = s.currentGraduations[0];
+              const belt = s.currentGraduations?.[0];
 
               return (
                 <div

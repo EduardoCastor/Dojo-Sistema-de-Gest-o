@@ -45,6 +45,7 @@ export interface UserMembership {
     status: string;
     trial_expires_at?: string;
     settings?: any;
+    logo_url?: string;
   } | null;
   branch?: {
     id: string;
@@ -136,7 +137,8 @@ export const authService = {
           plan_id,
           status,
           trial_expires_at,
-          settings
+          settings,
+          logo_url
         ),
         branch:branches (
           id,

@@ -164,9 +164,50 @@ export default function App() {
     };
   }, [currentTenantId]);
 
-  const activeTenant = tenants.find(t => t.id === currentTenantId) || tenants[0];
+  const fallbackTenant: Tenant = {
+    id: currentTenantId || 'tenant-kodokan',
+    tradeName: 'TatameHub Dojo',
+    legalName: 'TatameHub Dojo Ltda',
+    cnpjOrCpf: '00.000.000/0001-00',
+    adminName: 'Sensei Administrador',
+    email: 'contato@tatamehub.com.br',
+    phone: '(11) 98888-0000',
+    whatsapp: '(11) 98888-0000',
+    address: {
+      street: 'Rua Principal',
+      number: '100',
+      neighborhood: 'Centro',
+      city: 'São Paulo',
+      state: 'SP',
+      zipCode: '01000-000',
+    },
+    planId: 'trial',
+    status: 'trial',
+    trialStartedAt: new Date().toISOString(),
+    trialExpiresAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    retentionDays: 60,
+    settings: {
+      defaultDueDay: 10,
+      penaltyRate: 2,
+      dailyInterestRate: 0.033,
+      familyDiscount2ndMember: 15,
+      multiArtDiscount: 20,
+      customBrandColor: '#dc2626',
+    },
+  };
+
+  const activeTenant: Tenant = tenants.find(t => t.id === currentTenantId) || tenants[0] || fallbackTenant;
   const tenantBranches = branches.filter(b => b.tenantId === currentTenantId);
-  const currentUser = users.find(u => u.id === currentUserId) || users[1]; // default owner
+  const currentUser: User = users.find(u => u.id === currentUserId) || users[1] || users[0] || {
+    id: currentUserId || 'user-owner',
+    tenantId: currentTenantId,
+    name: 'Administrador',
+    email: 'admin@tatamehub.com.br',
+    role: 'owner',
+    phone: '',
+    active: true,
+  };
 
   // Supabase Auth Session listener
   useEffect(() => {
@@ -216,6 +257,7 @@ export default function App() {
             email: user.email || '',
             phone: '',
             whatsapp: '',
+            logoUrl: tenantData.logo_url || undefined,
             address: {
               street: '',
               number: '',
@@ -965,11 +1007,16 @@ export default function App() {
 
           {adminTab === 'reports' && (
             <ReportsView
+              tenant={activeTenant}
               students={students}
               persons={persons}
               invoices={invoices}
               attendances={attendances}
               belts={beltRanks}
+              onUpdateTenantLogo={(newLogoUrl) => {
+                const updated = { ...activeTenant, logoUrl: newLogoUrl };
+                handleSaveTenant(updated);
+              }}
             />
           )}
 

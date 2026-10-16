@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Building2, User, Mail, Phone, MapPin, CheckCircle, Clock, AlertCircle } from 'lucide-react';
+import { X, Building2, User, Mail, Phone, MapPin, CheckCircle, Clock, AlertCircle, Upload, Image, Trash2 } from 'lucide-react';
 import { Tenant, Branch, User as UserType } from '../../types';
 import { supabase, authService, isSupabaseConfigured, UserMembership } from '../../services/supabase';
 
@@ -32,6 +32,7 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [whatsapp, setWhatsapp] = useState('');
+  const [logoUrl, setLogoUrl] = useState('');
   const [street, setStreet] = useState('');
   const [number, setNumber] = useState('');
   const [neighborhood, setNeighborhood] = useState('');
@@ -46,6 +47,21 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
   const [currentSessionUser, setCurrentSessionUser] = useState<any>(null);
 
   const supabaseActive = isSupabaseConfigured();
+
+  const handleLogoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      setError('A imagem da logomarca deve ter no máximo 2MB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const res = reader.result as string;
+      setLogoUrl(res);
+    };
+    reader.readAsDataURL(file);
+  };
 
   // Ao abrir o modal, sincroniza dados da sessão ativa no Supabase Auth
   useEffect(() => {
@@ -169,6 +185,17 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
         // 6. Atualização dos vínculos do usuário a partir da tabela tenant_memberships
         const memberships = await authService.loadUserMemberships(session.user.id);
 
+        if (logoUrl && data?.tenant_id) {
+          try {
+            await supabase.from('tenants').update({ logo_url: logoUrl }).eq('id', data.tenant_id);
+            if (memberships.length > 0 && memberships[0].tenant) {
+              memberships[0].tenant.logo_url = logoUrl;
+            }
+          } catch (logoErr) {
+            console.warn('Não foi possível persistir logo_url imediatamente:', logoErr);
+          }
+        }
+
         setSuccessMessage('Academia e filial matriz cadastradas com sucesso no banco de dados!');
         setLoading(false);
 
@@ -211,6 +238,7 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
       email: email || 'contato@dojo.com.br',
       phone: phone || '(11) 98888-0000',
       whatsapp: whatsapp || phone || '(11) 98888-0000',
+      logoUrl: logoUrl || undefined,
       address: {
         street: street || 'Rua Principal',
         number: number || '100',
@@ -390,6 +418,60 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
                 placeholder="Ex: Associação de Judô Bushido"
                 className="w-full rounded-lg border border-slate-700 bg-slate-800 pl-9 pr-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
               />
+            </div>
+          </div>
+
+          {/* Logomarca da Academia */}
+          <div className="p-3 rounded-xl border border-slate-700/80 bg-slate-900/60 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="block text-slate-200 font-semibold text-xs flex items-center gap-1.5">
+                <Image className="h-4 w-4 text-red-400" />
+                <span>Logomarca da Academia (Opcional)</span>
+              </label>
+              <span className="text-[10px] text-slate-400">Exibida no cabeçalho dos relatórios</span>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="h-14 w-14 rounded-xl border-2 border-dashed border-slate-700 bg-slate-950/80 flex items-center justify-center overflow-hidden shrink-0 shadow-inner">
+                {logoUrl ? (
+                  <img src={logoUrl} alt="Prévia da Logomarca" className="h-full w-full object-contain p-1" />
+                ) : (
+                  <Building2 className="h-6 w-6 text-slate-600" />
+                )}
+              </div>
+
+              <div className="flex-1 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <label className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-medium text-slate-200 hover:text-white transition-colors shadow-sm">
+                    <Upload className="h-3.5 w-3.5 text-red-400" />
+                    <span>Selecionar Imagem</span>
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                      onChange={handleLogoFileChange}
+                      className="hidden"
+                    />
+                  </label>
+
+                  {logoUrl && (
+                    <button
+                      type="button"
+                      onClick={() => setLogoUrl('')}
+                      className="p-1.5 rounded-lg border border-red-900/40 bg-red-950/40 text-red-400 hover:text-red-300 hover:bg-red-900/40 transition-colors"
+                      title="Remover logotipo"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  value={logoUrl.startsWith('data:') ? '' : logoUrl}
+                  onChange={(e) => setLogoUrl(e.target.value)}
+                  placeholder="Ou informe a URL da logomarca (https://...)"
+                  className="w-full rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
+                />
+              </div>
             </div>
           </div>
 

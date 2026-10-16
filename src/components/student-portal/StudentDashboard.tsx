@@ -41,7 +41,17 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   onOpenLibraryItem,
 }) => {
   const [copiedPix, setCopiedPix] = useState(false);
-  const currentBelt = student.currentGraduations[0];
+
+  if (!student || !person) {
+    return (
+      <div className="p-8 text-center text-slate-400 bg-slate-900/50 rounded-2xl border border-slate-800 my-8">
+        <p className="text-sm font-semibold text-white mb-1">Área do Aluno</p>
+        <p className="text-xs text-slate-400">Nenhum prontuário de aluno vinculado a este perfil no momento.</p>
+      </div>
+    );
+  }
+
+  const currentBelt = student?.currentGraduations?.[0];
 
   // Attendance metrics
   const studentAtt = attendances.filter(a => a.studentId === student.id);

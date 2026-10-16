@@ -112,13 +112,21 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
         <div>
           {/* Brand header */}
           <div className="flex h-16 items-center justify-between px-6 border-b border-slate-800">
-            <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-red-600 text-white font-bold text-sm shadow">
-                TH
-              </div>
-              <div>
+            <div className="flex items-center gap-2.5 overflow-hidden">
+              {tenant?.logoUrl ? (
+                <img
+                  src={tenant.logoUrl}
+                  alt={tenant.tradeName}
+                  className="h-8 w-8 rounded-lg object-contain bg-slate-800 border border-slate-700 p-0.5 shadow shrink-0"
+                />
+              ) : (
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-red-600 text-white font-bold text-sm shadow shrink-0">
+                  TH
+                </div>
+              )}
+              <div className="overflow-hidden">
                 <div className="text-sm font-bold text-white tracking-tight">Tatame<span className="text-red-500">Hub</span></div>
-                <div className="text-[10px] text-slate-400 truncate max-w-[140px]">{tenant.tradeName}</div>
+                <div className="text-[10px] text-slate-400 truncate max-w-[130px]">{tenant?.tradeName || 'Academia'}</div>
               </div>
             </div>
             <button

@@ -43,6 +43,15 @@ export const GuardianPortal: React.FC<GuardianPortalProps> = ({
   attendances,
   healthRecords,
 }) => {
+  if (!guardianPerson) {
+    return (
+      <div className="p-8 text-center text-slate-400 bg-slate-900/50 rounded-2xl border border-slate-800 my-8">
+        <p className="text-sm font-semibold text-white mb-1">Portal do Responsável</p>
+        <p className="text-xs text-slate-400">Nenhum responsável legal identificado para este usuário no momento.</p>
+      </div>
+    );
+  }
+
   // Find dependents
   const dependentStudentIds = relationships
     .filter(r => r.guardianPersonId === guardianPerson.id)
@@ -55,7 +64,7 @@ export const GuardianPortal: React.FC<GuardianPortalProps> = ({
   const activeStudent = myStudents.find(s => s.id === selectedStudentId) || myStudents[0];
   const activePerson = persons.find(p => p.id === activeStudent?.personId);
   const activeAge = activePerson ? calculateAge(activePerson.birthDate) : 0;
-  const activeBelt = activeStudent?.currentGraduations[0];
+  const activeBelt = activeStudent?.currentGraduations?.[0];
   const activeHealth = healthRecords.find(h => h.studentId === activeStudent?.id);
 
   // Consolidated Invoices for this guardian

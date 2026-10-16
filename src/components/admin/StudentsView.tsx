@@ -73,9 +73,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
     if (!person) return false;
 
     const matchesSearch =
-      person.fullName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      s.registrationNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      person.cpf.includes(searchTerm);
+      (person.fullName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (s.registrationNumber || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (person.cpf ? person.cpf.includes(searchTerm) : false);
 
     const matchesStatus =
       statusFilter === 'all' || s.status === statusFilter;
@@ -206,7 +206,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                   const age = calculateAge(person.birthDate);
                   const guardianRels = getStudentGuardians(s.id);
                   const legalGuardian = guardianRels.find(g => g.relationship.isLegalGuardian);
-                  const currentBelt = s.currentGraduations[0];
+                  const currentBelt = s.currentGraduations?.[0];
 
                   return (
                     <tr key={s.id} className="hover:bg-slate-800/40 transition-colors">
@@ -581,7 +581,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               {profileTab === 'ranks' && (
                 <div className="space-y-3">
                   <div className="font-semibold text-slate-200">Faixas Atuais do Praticante</div>
-                  {selectedStudent.currentGraduations.map((g, i) => (
+                  {(selectedStudent.currentGraduations || []).map((g, i) => (
                     <div key={i} className="flex items-center justify-between p-3 rounded-lg border border-slate-800 bg-slate-950/60">
                       <div className="flex items-center gap-3">
                         <span

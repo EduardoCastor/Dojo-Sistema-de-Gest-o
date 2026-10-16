@@ -73,9 +73,9 @@ export interface StudentServiceResult {
 export const studentService = {
   /**
    * Consulta as modalidades de artes marciais da academia informada (tenant_id) no Supabase.
-   * Filtra exclusivamente por tenant_id e status='active', ordenando pelo nome.
+   * Filtra por tenant_id e opcionalmente por status='active' (padrão true para formulários de alunos).
    */
-  async fetchMartialArts(tenantId: string): Promise<MartialArt[]> {
+  async fetchMartialArts(tenantId: string, includeInactive: boolean = false): Promise<MartialArt[]> {
     if (!isSupabaseConfigured() || !supabase) {
       throw new Error('Supabase não configurado');
     }
@@ -83,12 +83,16 @@ export const studentService = {
       throw new Error('ID da academia (tenant_id) deve ser um UUID válido no Supabase.');
     }
 
-    const { data, error } = await supabase
+    let query = supabase
       .from('martial_arts')
       .select('id, tenant_id, name, origin, description, governing_federation, status')
-      .eq('tenant_id', tenantId)
-      .eq('status', 'active')
-      .order('name', { ascending: true });
+      .eq('tenant_id', tenantId);
+
+    if (!includeInactive) {
+      query = query.eq('status', 'active');
+    }
+
+    const { data, error } = await query.order('name', { ascending: true });
 
     if (error) {
       console.error('Erro ao consultar public.martial_arts no Supabase:', error);
@@ -102,8 +106,148 @@ export const studentService = {
       origin: row.origin || '',
       description: row.description || '',
       governingFederation: row.governing_federation || undefined,
-      status: row.status as 'active' | 'inactive',
+      status: (row.status || 'active') as 'active' | 'inactive',
     }));
+  },
+
+  /**
+   * Cadastra uma nova modalidade de arte marcial no Supabase.
+   */
+  async createMartialArt(
+    tenantId: string,
+    data: {
+      name: string;
+      origin?: string;
+      description?: string;
+      governingFederation?: string;
+      status?: 'active' | 'inactive';
+    }
+  ): Promise<MartialArt> {
+    if (!isSupabaseConfigured() || !supabase) {
+      throw new Error('Supabase não configurado');
+    }
+    if (!isValidUUID(tenantId)) {
+      throw new Error('ID da academia (tenant_id) deve ser um UUID válido.');
+    }
+    if (!data.name || !data.name.trim()) {
+      throw new Error('O nome da arte marcial é obrigatório.');
+    }
+
+    const insertPayload = {
+      tenant_id: tenantId,
+      name: data.name.trim(),
+      origin: data.origin?.trim() || null,
+      description: data.description?.trim() || null,
+      governing_federation: data.governingFederation?.trim() || null,
+      status: data.status || 'active',
+    };
+
+    const { data: created, error } = await supabase
+      .from('martial_arts')
+      .insert(insertPayload)
+      .select('id, tenant_id, name, origin, description, governing_federation, status')
+      .single();
+
+    if (error) {
+      console.error('Erro ao inserir arte marcial no Supabase:', error);
+      throw new Error(`Erro ao cadastrar modalidade: ${error.message}`);
+    }
+
+    return {
+      id: created.id,
+      tenantId: created.tenant_id,
+      name: created.name,
+      origin: created.origin || '',
+      description: created.description || '',
+      governingFederation: created.governing_federation || undefined,
+      status: created.status as 'active' | 'inactive',
+    };
+  },
+
+  /**
+   * Atualiza os dados de uma modalidade existente no Supabase.
+   */
+  async updateMartialArt(
+    tenantId: string,
+    id: string,
+    data: Partial<{
+      name: string;
+      origin: string;
+      description: string;
+      governingFederation: string;
+      status: 'active' | 'inactive';
+    }>
+  ): Promise<MartialArt> {
+    if (!isSupabaseConfigured() || !supabase) {
+      throw new Error('Supabase não configurado');
+    }
+    if (!isValidUUID(tenantId) || !isValidUUID(id)) {
+      throw new Error('tenantId e id devem ser UUIDs válidos.');
+    }
+
+    const updatePayload: Record<string, any> = {};
+    if (data.name !== undefined) updatePayload.name = data.name.trim();
+    if (data.origin !== undefined) updatePayload.origin = data.origin.trim();
+    if (data.description !== undefined) updatePayload.description = data.description.trim();
+    if (data.governingFederation !== undefined) updatePayload.governing_federation = data.governingFederation.trim() || null;
+    if (data.status !== undefined) updatePayload.status = data.status;
+
+    const { data: updated, error } = await supabase
+      .from('martial_arts')
+      .update(updatePayload)
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .select('id, tenant_id, name, origin, description, governing_federation, status')
+      .single();
+
+    if (error) {
+      console.error('Erro ao atualizar arte marcial no Supabase:', error);
+      throw new Error(`Erro ao atualizar modalidade: ${error.message}`);
+    }
+
+    return {
+      id: updated.id,
+      tenantId: updated.tenant_id,
+      name: updated.name,
+      origin: updated.origin || '',
+      description: updated.description || '',
+      governingFederation: updated.governing_federation || undefined,
+      status: updated.status as 'active' | 'inactive',
+    };
+  },
+
+  /**
+   * Altera o status (active / inactive) de uma modalidade.
+   */
+  async toggleMartialArtStatus(
+    tenantId: string,
+    id: string,
+    status: 'active' | 'inactive'
+  ): Promise<MartialArt> {
+    return this.updateMartialArt(tenantId, id, { status });
+  },
+
+  /**
+   * Exclui uma modalidade do Supabase (se não houver registros dependentes ou regras de restrição).
+   */
+  async deleteMartialArt(tenantId: string, id: string): Promise<void> {
+    if (!isSupabaseConfigured() || !supabase) {
+      throw new Error('Supabase não configurado');
+    }
+    if (!isValidUUID(tenantId) || !isValidUUID(id)) {
+      throw new Error('tenantId e id devem ser UUIDs válidos.');
+    }
+
+    const { error } = await supabase
+      .from('martial_arts')
+      .delete()
+      .eq('id', id)
+      .eq('tenant_id', tenantId);
+
+    if (error) {
+      console.error('Erro ao excluir arte marcial no Supabase:', error);
+      throw new Error(`Erro ao excluir modalidade: ${error.message}`);
+    }
   },
 
   /**
@@ -151,6 +295,216 @@ export const studentService = {
       technicalRequirements: row.technical_requirements || '',
       requiresExam: Boolean(row.requires_exam),
     }));
+  },
+
+  /**
+   * Cadastra uma nova faixa/graduação vinculada a uma modalidade no Supabase.
+   */
+  async createBeltRank(
+    tenantId: string,
+    data: {
+      martialArtId: string;
+      name: string;
+      rankType?: 'faixa' | 'grau' | 'dan' | 'corda';
+      orderIndex?: number;
+      colorHex: string;
+      stripeColorHex?: string;
+      minAgeYears?: number;
+      minPracticeMonths?: number;
+      technicalRequirements?: string;
+      requiresExam?: boolean;
+    }
+  ): Promise<BeltRank> {
+    if (!isSupabaseConfigured() || !supabase) {
+      throw new Error('Supabase não configurado');
+    }
+    if (!isValidUUID(tenantId) || !isValidUUID(data.martialArtId)) {
+      throw new Error('tenantId e martialArtId devem ser UUIDs válidos.');
+    }
+    if (!data.name || !data.name.trim()) {
+      throw new Error('O nome da faixa/graduação é obrigatório.');
+    }
+
+    // Se orderIndex não foi informado, buscar o maior atual e somar 1
+    let nextOrder = data.orderIndex;
+    if (nextOrder === undefined || nextOrder === null) {
+      const { data: existing } = await supabase
+        .from('belt_ranks')
+        .select('order_index')
+        .eq('tenant_id', tenantId)
+        .eq('martial_art_id', data.martialArtId)
+        .order('order_index', { ascending: false })
+        .limit(1);
+
+      nextOrder = (existing?.[0]?.order_index ?? 0) + 1;
+    }
+
+    const insertPayload = {
+      tenant_id: tenantId,
+      martial_art_id: data.martialArtId,
+      name: data.name.trim(),
+      rank_type: data.rankType || 'faixa',
+      order_index: nextOrder,
+      color_hex: data.colorHex || '#ffffff',
+      stripe_color_hex: data.stripeColorHex || null,
+      min_age_years: data.minAgeYears ?? 4,
+      min_practice_months: data.minPracticeMonths ?? 0,
+      technical_requirements: data.technicalRequirements?.trim() || null,
+      requires_exam: data.requiresExam !== false,
+    };
+
+    const { data: created, error } = await supabase
+      .from('belt_ranks')
+      .insert(insertPayload)
+      .select('id, tenant_id, martial_art_id, name, rank_type, order_index, color_hex, stripe_color_hex, min_age_years, min_practice_months, technical_requirements, requires_exam')
+      .single();
+
+    if (error) {
+      console.error('Erro ao cadastrar faixa no Supabase:', error);
+      throw new Error(`Erro ao cadastrar graduação: ${error.message}`);
+    }
+
+    return {
+      id: created.id,
+      tenantId: created.tenant_id,
+      martialArtId: created.martial_art_id,
+      name: created.name,
+      rankType: created.rank_type as any,
+      orderIndex: created.order_index,
+      colorHex: created.color_hex,
+      stripeColorHex: created.stripe_color_hex || undefined,
+      minAgeYears: created.min_age_years,
+      minPracticeMonths: created.min_practice_months,
+      technicalRequirements: created.technical_requirements || '',
+      requiresExam: created.requires_exam,
+    };
+  },
+
+  /**
+   * Atualiza os dados de uma faixa/graduação existente no Supabase.
+   */
+  async updateBeltRank(
+    tenantId: string,
+    id: string,
+    data: Partial<{
+      name: string;
+      rankType: 'faixa' | 'grau' | 'dan' | 'corda';
+      orderIndex: number;
+      colorHex: string;
+      stripeColorHex: string;
+      minAgeYears: number;
+      minPracticeMonths: number;
+      technicalRequirements: string;
+      requiresExam: boolean;
+    }>
+  ): Promise<BeltRank> {
+    if (!isSupabaseConfigured() || !supabase) {
+      throw new Error('Supabase não configurado');
+    }
+    if (!isValidUUID(tenantId) || !isValidUUID(id)) {
+      throw new Error('tenantId e id devem ser UUIDs válidos.');
+    }
+
+    const updatePayload: Record<string, any> = {};
+    if (data.name !== undefined) updatePayload.name = data.name.trim();
+    if (data.rankType !== undefined) updatePayload.rank_type = data.rankType;
+    if (data.orderIndex !== undefined) updatePayload.order_index = Number(data.orderIndex);
+    if (data.colorHex !== undefined) updatePayload.color_hex = data.colorHex;
+    if (data.stripeColorHex !== undefined) updatePayload.stripe_color_hex = data.stripeColorHex || null;
+    if (data.minAgeYears !== undefined) updatePayload.min_age_years = Number(data.minAgeYears);
+    if (data.minPracticeMonths !== undefined) updatePayload.min_practice_months = Number(data.minPracticeMonths);
+    if (data.technicalRequirements !== undefined) updatePayload.technical_requirements = data.technicalRequirements.trim();
+    if (data.requiresExam !== undefined) updatePayload.requires_exam = Boolean(data.requiresExam);
+
+    const { data: updated, error } = await supabase
+      .from('belt_ranks')
+      .update(updatePayload)
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .select('id, tenant_id, martial_art_id, name, rank_type, order_index, color_hex, stripe_color_hex, min_age_years, min_practice_months, technical_requirements, requires_exam')
+      .single();
+
+    if (error) {
+      console.error('Erro ao atualizar faixa no Supabase:', error);
+      throw new Error(`Erro ao atualizar graduação: ${error.message}`);
+    }
+
+    return {
+      id: updated.id,
+      tenantId: updated.tenant_id,
+      martialArtId: updated.martial_art_id,
+      name: updated.name,
+      rankType: updated.rank_type as any,
+      orderIndex: updated.order_index,
+      colorHex: updated.color_hex,
+      stripeColorHex: updated.stripe_color_hex || undefined,
+      minAgeYears: updated.min_age_years,
+      minPracticeMonths: updated.min_practice_months,
+      technicalRequirements: updated.technical_requirements || '',
+      requiresExam: updated.requires_exam,
+    };
+  },
+
+  /**
+   * Exclui uma faixa/graduação do Supabase.
+   */
+  async deleteBeltRank(tenantId: string, id: string): Promise<void> {
+    if (!isSupabaseConfigured() || !supabase) {
+      throw new Error('Supabase não configurado');
+    }
+    if (!isValidUUID(tenantId) || !isValidUUID(id)) {
+      throw new Error('tenantId e id devem ser UUIDs válidos.');
+    }
+
+    const { error } = await supabase
+      .from('belt_ranks')
+      .delete()
+      .eq('id', id)
+      .eq('tenant_id', tenantId);
+
+    if (error) {
+      console.error('Erro ao excluir faixa no Supabase:', error);
+      throw new Error(`Erro ao excluir graduação: ${error.message}`);
+    }
+  },
+
+  /**
+   * Reordena as faixas de uma arte marcial atualizando seu order_index progressivo.
+   * Tenta primeiro a função RPC atômica reorder_belt_ranks e faz fallback seguro para updates individuais.
+   */
+  async reorderBeltRanks(tenantId: string, martialArtId: string, orderedBeltIds: string[]): Promise<void> {
+    if (!isSupabaseConfigured() || !supabase) {
+      throw new Error('Supabase não configurado');
+    }
+    if (!isValidUUID(tenantId) || !isValidUUID(martialArtId)) {
+      throw new Error('tenantId e martialArtId devem ser UUIDs válidos.');
+    }
+
+    // 1. Tentar via RPC atômica
+    try {
+      const { error: rpcError } = await supabase.rpc('reorder_belt_ranks', {
+        p_tenant_id: tenantId,
+        p_martial_art_id: martialArtId,
+        p_ordered_belt_ids: orderedBeltIds,
+      });
+
+      if (!rpcError) {
+        return;
+      }
+    } catch {
+      // Se a função RPC ainda não foi aplicada na migration, prosseguir para fallback
+    }
+
+    // 2. Fallback: update individual em paralelo/sequencial
+    for (let index = 0; index < orderedBeltIds.length; index++) {
+      const beltId = orderedBeltIds[index];
+      await supabase
+        .from('belt_ranks')
+        .update({ order_index: index + 1 })
+        .eq('id', beltId)
+        .eq('tenant_id', tenantId)
+        .eq('martial_art_id', martialArtId);
+    }
   },
 
   /**

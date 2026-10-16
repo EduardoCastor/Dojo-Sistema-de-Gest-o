@@ -152,7 +152,7 @@ export default function App() {
         // Sincronizar modalidades e graduações reais da academia ativa
         try {
           const [realArts, realBelts] = await Promise.all([
-            studentService.fetchMartialArts(currentTenantId),
+            studentService.fetchMartialArts(currentTenantId, true),
             studentService.fetchBeltRanks(currentTenantId),
           ]);
           if (isMounted) {
@@ -699,7 +699,77 @@ export default function App() {
     );
   };
 
-  // Handlers for Belt Rank addition
+  // Handlers for Martial Arts
+  const handleAddMartialArt = (art: MartialArt) => {
+    const updated = [...martialArts, art];
+    DataStore.saveMartialArts(updated);
+    setMartialArts(updated);
+
+    DataStore.logAudit(
+      currentTenantId,
+      currentUser.id,
+      currentUser.name,
+      'Criação de Modalidade',
+      'MartialArt',
+      art.id,
+      `Nova modalidade ${art.name} cadastrada.`
+    );
+  };
+
+  const handleUpdateMartialArt = (art: MartialArt) => {
+    const updated = martialArts.map((m) => (m.id === art.id ? art : m));
+    DataStore.saveMartialArts(updated);
+    setMartialArts(updated);
+
+    DataStore.logAudit(
+      currentTenantId,
+      currentUser.id,
+      currentUser.name,
+      'Edição de Modalidade',
+      'MartialArt',
+      art.id,
+      `Modalidade ${art.name} atualizada.`
+    );
+  };
+
+  const handleToggleMartialArtStatus = (art: MartialArt) => {
+    const updated = martialArts.map((m) => (m.id === art.id ? art : m));
+    DataStore.saveMartialArts(updated);
+    setMartialArts(updated);
+
+    DataStore.logAudit(
+      currentTenantId,
+      currentUser.id,
+      currentUser.name,
+      'Alteração de Status',
+      'MartialArt',
+      art.id,
+      `Modalidade ${art.name} alterada para status ${art.status}.`
+    );
+  };
+
+  const handleDeleteMartialArt = (id: string) => {
+    const artToDelete = martialArts.find((m) => m.id === id);
+    const updatedArts = martialArts.filter((m) => m.id !== id);
+    const updatedBelts = beltRanks.filter((b) => b.martialArtId !== id);
+
+    DataStore.saveMartialArts(updatedArts);
+    DataStore.saveBeltRanks(updatedBelts);
+    setMartialArts(updatedArts);
+    setBeltRanks(updatedBelts);
+
+    DataStore.logAudit(
+      currentTenantId,
+      currentUser.id,
+      currentUser.name,
+      'Exclusão de Modalidade',
+      'MartialArt',
+      id,
+      `Modalidade ${artToDelete?.name || id} removida com suas faixas.`
+    );
+  };
+
+  // Handlers for Belt Rank addition, edit, delete, reorder
   const handleAddBeltRank = (rank: BeltRank) => {
     const updated = [...beltRanks, rank];
     DataStore.saveBeltRanks(updated);
@@ -714,6 +784,69 @@ export default function App() {
       rank.id,
       `Nova graduação ${rank.name} cadastrada.`
     );
+  };
+
+  const handleUpdateBeltRank = (rank: BeltRank) => {
+    const updated = beltRanks.map((b) => (b.id === rank.id ? rank : b));
+    DataStore.saveBeltRanks(updated);
+    setBeltRanks(updated);
+
+    DataStore.logAudit(
+      currentTenantId,
+      currentUser.id,
+      currentUser.name,
+      'Edição de Faixa',
+      'BeltRank',
+      rank.id,
+      `Graduação ${rank.name} atualizada.`
+    );
+  };
+
+  const handleDeleteBeltRank = (id: string) => {
+    const beltToDelete = beltRanks.find((b) => b.id === id);
+    const updated = beltRanks.filter((b) => b.id !== id);
+    DataStore.saveBeltRanks(updated);
+    setBeltRanks(updated);
+
+    DataStore.logAudit(
+      currentTenantId,
+      currentUser.id,
+      currentUser.name,
+      'Exclusão de Faixa',
+      'BeltRank',
+      id,
+      `Graduação ${beltToDelete?.name || id} removida.`
+    );
+  };
+
+  const handleReorderBeltRanks = (artId: string, orderedRanks: BeltRank[]) => {
+    const otherBelts = beltRanks.filter((b) => b.martialArtId !== artId);
+    const updated = [...otherBelts, ...orderedRanks];
+    DataStore.saveBeltRanks(updated);
+    setBeltRanks(updated);
+
+    DataStore.logAudit(
+      currentTenantId,
+      currentUser.id,
+      currentUser.name,
+      'Reordenação de Faixas',
+      'BeltRank',
+      artId,
+      `Sequência de graduações reordenada para modalidade.`
+    );
+  };
+
+  const handleRefreshModalities = async () => {
+    try {
+      const [realArts, realBelts] = await Promise.all([
+        studentService.fetchMartialArts(currentTenantId, true),
+        studentService.fetchBeltRanks(currentTenantId),
+      ]);
+      if (realArts && realArts.length > 0) setMartialArts(realArts);
+      if (realBelts && realBelts.length > 0) setBeltRanks(realBelts);
+    } catch (err) {
+      console.warn('Erro ao recarregar modalidades/faixas:', err);
+    }
   };
 
   // Handlers for Classes
@@ -931,10 +1064,19 @@ export default function App() {
 
           {adminTab === 'modalities' && (
             <ModalitiesView
+              tenantId={currentTenantId}
+              currentUser={currentUser}
               martialArts={martialArts}
               beltRanks={beltRanks}
               onAddBeltRank={handleAddBeltRank}
-              onAddMartialArt={() => {}}
+              onUpdateBeltRank={handleUpdateBeltRank}
+              onDeleteBeltRank={handleDeleteBeltRank}
+              onReorderBeltRanks={handleReorderBeltRanks}
+              onAddMartialArt={handleAddMartialArt}
+              onUpdateMartialArt={handleUpdateMartialArt}
+              onToggleMartialArtStatus={handleToggleMartialArtStatus}
+              onDeleteMartialArt={handleDeleteMartialArt}
+              onRefresh={handleRefreshModalities}
             />
           )}
 

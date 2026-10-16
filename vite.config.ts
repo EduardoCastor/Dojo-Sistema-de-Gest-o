@@ -5,7 +5,7 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
-    base: '/Dojo-Sistema-de-Gestao/',
+    base: '/',
     
     plugins: [react(), tailwindcss()],
     resolve: {

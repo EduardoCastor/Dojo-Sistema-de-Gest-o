@@ -825,37 +825,70 @@ export const studentService = {
     }
 
     // 4. Se a graduação mudou e são UUIDs válidos
-    if (isValidUUID(payload.martialArtId) && isValidUUID(payload.beltRankId)) {
-      try {
-        const { data: existingGrad } = await supabase
-          .from('student_graduations')
-          .select('id')
-          .eq('student_id', payload.studentId)
-          .eq('tenant_id', payload.tenantId)
-          .limit(1);
 
-        if (existingGrad && existingGrad.length > 0) {
-          await supabase
-            .from('student_graduations')
-            .update({
-              martial_art_id: payload.martialArtId,
-              belt_rank_id: payload.beltRankId,
-            })
-            .eq('id', existingGrad[0].id)
-            .eq('tenant_id', payload.tenantId);
-        } else {
-          await supabase
-            .from('student_graduations')
-            .insert({
-              tenant_id: payload.tenantId,
-              student_id: payload.studentId,
-              martial_art_id: payload.martialArtId,
-              belt_rank_id: payload.beltRankId,
-              examiner_name: 'Sensei Responsável',
-            });
-        }
-      } catch (gErr) {
-        console.warn('Aviso ao sincronizar graduação no Supabase:', gErr);
+    // 4. Persistir a graduação do aluno no Supabase
+
+    if (
+      !isValidUUID(payload.martialArtId) ||
+      !isValidUUID(payload.beltRankId)
+    ) {
+      throw new Error(
+        'A modalidade ou faixa selecionada não possui um ID válido ' +
+        'no Supabase. Cadastre a modalidade e suas graduações no banco.'
+      );
+    }
+
+    // Consultar a graduação mais recente do aluno
+    const { data: existingGrad, error: fetchGradError } =
+      await supabase
+        .from('student_graduations')
+        .select('id, martial_art_id, belt_rank_id, graduated_at')
+        .eq('student_id', payload.studentId)
+        .eq('tenant_id', payload.tenantId)
+        .order('graduated_at', { ascending: false })
+        .limit(1);
+
+    if (fetchGradError) {
+      throw new Error(
+        'Erro ao consultar graduação: ' + fetchGradError.message
+      );
+    }
+
+    const currentGrad = existingGrad?.[0];
+
+    const graduationChanged =
+      !currentGrad ||
+      currentGrad.martial_art_id !== payload.martialArtId ||
+      currentGrad.belt_rank_id !== payload.beltRankId;
+
+    if (graduationChanged) {
+      const { data: savedGrad, error: saveGradError } =
+        await supabase
+          .from('student_graduations')
+          .insert({
+            tenant_id: payload.tenantId,
+            student_id: payload.studentId,
+            martial_art_id: payload.martialArtId,
+            belt_rank_id: payload.beltRankId,
+            graduated_at: new Date()
+              .toISOString()
+              .split('T')[0],
+            examiner_name: 'Atualização administrativa'
+          })
+          .select('id')
+          .single();
+
+      if (saveGradError) {
+        throw new Error(
+          'Erro ao salvar Faixa/Graduação: ' +
+          saveGradError.message
+        );
+      }
+
+      if (!savedGrad) {
+        throw new Error(
+          'A graduação não foi confirmada pelo Supabase.'
+        );
       }
     }
 

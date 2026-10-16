@@ -626,7 +626,19 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               )}
             </div>
 
-            <div className="mt-6 pt-4 border-t border-slate-800 flex justify-end">
+            <div className="mt-6 pt-4 border-t border-slate-800 flex items-center justify-between">
+              <button
+                onClick={() => {
+                  const toEdit = selectedStudent;
+                  setSelectedStudent(null);
+                  onEditStudent(toEdit);
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-xs font-semibold text-white transition-colors cursor-pointer shadow"
+              >
+                <Edit className="h-3.5 w-3.5" />
+                <span>Editar Cadastro</span>
+              </button>
+
               <button
                 onClick={() => setSelectedStudent(null)}
                 className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-white transition-colors cursor-pointer"

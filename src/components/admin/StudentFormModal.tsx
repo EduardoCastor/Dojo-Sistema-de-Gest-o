@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { X, UserPlus, Check, AlertCircle, Loader2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, UserPlus, Check, AlertCircle, Loader2, Edit } from 'lucide-react';
 import {
   Student,
   Person,
@@ -8,7 +8,7 @@ import {
   MartialArt,
 } from '../../types';
 import { calculateAge } from '../../utils/formatters';
-import { CreateStudentPayload } from '../../services/studentService';
+import { CreateStudentPayload, UpdateStudentPayload } from '../../services/studentService';
 
 interface StudentFormModalProps {
   isOpen: boolean;
@@ -17,12 +17,23 @@ interface StudentFormModalProps {
   branchId: string;
   belts: BeltRank[];
   martialArts: MartialArt[];
+  studentToEdit?: Student | null;
+  personToEdit?: Person | null;
+  guardianRelToEdit?: GuardianRelationship | null;
+  guardianPersonToEdit?: Person | null;
   onSave: (
     newStudent: Student,
     newPerson: Person,
     guardianPerson?: Person,
     relationship?: GuardianRelationship,
     payloadDetails?: CreateStudentPayload
+  ) => Promise<void> | void;
+  onUpdate?: (
+    updatedStudent: Student,
+    updatedPerson: Person,
+    guardianPerson?: Person,
+    relationship?: GuardianRelationship,
+    payloadDetails?: UpdateStudentPayload
   ) => Promise<void> | void;
 }
 
@@ -33,8 +44,15 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
   branchId,
   belts,
   martialArts,
+  studentToEdit,
+  personToEdit,
+  guardianRelToEdit,
+  guardianPersonToEdit,
   onSave,
+  onUpdate,
 }) => {
+  const isEditing = Boolean(studentToEdit && personToEdit);
+
   // Student Personal Data
   const [fullName, setFullName] = useState('');
   const [socialName, setSocialName] = useState('');
@@ -45,6 +63,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
   const [email, setEmail] = useState('');
   const [city, setCity] = useState('São Paulo');
   const [monthlyFee, setMonthlyFee] = useState('220');
+  const [studentStatus, setStudentStatus] = useState<'active' | 'inactive' | 'suspended' | 'dropped'>('active');
 
   // Belt & Martial Art
   const [selectedArtId, setSelectedArtId] = useState(martialArts[0]?.id || 'art-judo');
@@ -61,6 +80,69 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Sincronizar dados ao abrir para criar ou editar
+  useEffect(() => {
+    if (!isOpen) return;
+
+    setError('');
+    setIsSubmitting(false);
+
+    if (studentToEdit && personToEdit) {
+      setFullName(personToEdit.fullName || '');
+      setSocialName(personToEdit.socialName || '');
+      setCpf(personToEdit.cpf || '');
+      setBirthDate(personToEdit.birthDate || '2014-05-10');
+      setGender(personToEdit.gender || 'male');
+      setPhone(personToEdit.phone || '');
+      setEmail(personToEdit.email || '');
+      setCity(personToEdit.address?.city || 'São Paulo');
+      setMonthlyFee(String(studentToEdit.monthlyFee ?? 220));
+      setStudentStatus(studentToEdit.status || 'active');
+
+      const initialArtId = studentToEdit.currentGraduations?.[0]?.martialArtId || martialArts[0]?.id || 'art-judo';
+      setSelectedArtId(initialArtId);
+      const initialBeltId = studentToEdit.currentGraduations?.[0]?.beltId || belts[0]?.id || 'rank-judo-branca';
+      setSelectedBeltId(initialBeltId);
+
+      if (guardianPersonToEdit) {
+        setHasGuardian(true);
+        setGuardianName(guardianPersonToEdit.fullName || '');
+        setGuardianCpf(guardianPersonToEdit.cpf || '');
+        setGuardianPhone(guardianPersonToEdit.phone || '');
+        setGuardianEmail(guardianPersonToEdit.email || '');
+        setRelationshipType(guardianRelToEdit?.relationshipLabel || 'Pai');
+      } else {
+        const isMinor = calculateAge(personToEdit.birthDate) < 18;
+        setHasGuardian(isMinor);
+        setGuardianName('');
+        setGuardianCpf('');
+        setGuardianPhone('');
+        setGuardianEmail('');
+        setRelationshipType('Pai');
+      }
+    } else {
+      // Modo Criação
+      setFullName('');
+      setSocialName('');
+      setCpf('');
+      setBirthDate('2014-05-10');
+      setGender('male');
+      setPhone('');
+      setEmail('');
+      setCity('São Paulo');
+      setMonthlyFee('220');
+      setStudentStatus('active');
+      setSelectedArtId(martialArts[0]?.id || 'art-judo');
+      setSelectedBeltId(belts[0]?.id || 'rank-judo-branca');
+      setHasGuardian(true);
+      setGuardianName('');
+      setGuardianCpf('');
+      setGuardianPhone('');
+      setGuardianEmail('');
+      setRelationshipType('Pai');
+    }
+  }, [isOpen, studentToEdit, personToEdit, guardianRelToEdit, guardianPersonToEdit, martialArts, belts]);
+
   if (!isOpen) return null;
 
   const currentAge = calculateAge(birthDate);
@@ -74,13 +156,128 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       return;
     }
 
-    if (hasGuardian && (!guardianName.trim())) {
+    if (hasGuardian && !guardianName.trim()) {
       setError('Por favor, informe o nome do responsável ou desmarque a opção de vincular responsável.');
       return;
     }
 
     setIsSubmitting(true);
 
+    const chosenBelt = belts.find(b => b.id === selectedBeltId) || belts[0];
+    const chosenArt = martialArts.find(m => m.id === selectedArtId) || martialArts[0];
+
+    // ==========================================
+    // FLUXO DE EDIÇÃO DE ALUNO EXISTENTE
+    // ==========================================
+    if (isEditing && studentToEdit && personToEdit) {
+      const updatedPerson: Person = {
+        ...personToEdit,
+        fullName: fullName.trim(),
+        socialName: socialName.trim() || undefined,
+        cpf: cpf || personToEdit.cpf,
+        birthDate,
+        gender,
+        phone: phone || personToEdit.phone,
+        email: email || personToEdit.email,
+        address: {
+          ...personToEdit.address,
+          city,
+        },
+      };
+
+      const updatedStudent: Student = {
+        ...studentToEdit,
+        monthlyFee: Number(monthlyFee) || studentToEdit.monthlyFee,
+        status: studentStatus,
+        currentGraduations: [
+          {
+            martialArtId: chosenArt?.id || studentToEdit.currentGraduations?.[0]?.martialArtId || 'art-judo',
+            martialArtName: chosenArt?.name || studentToEdit.currentGraduations?.[0]?.martialArtName || 'Judô',
+            beltId: chosenBelt?.id || studentToEdit.currentGraduations?.[0]?.beltId || 'rank-judo-branca',
+            beltName: chosenBelt?.name || studentToEdit.currentGraduations?.[0]?.beltName || 'Faixa Branca',
+            beltColorHex: chosenBelt?.colorHex || studentToEdit.currentGraduations?.[0]?.beltColorHex || '#ffffff',
+            graduatedAt: studentToEdit.currentGraduations?.[0]?.graduatedAt || new Date().toISOString().split('T')[0],
+          },
+        ],
+      };
+
+      let updatedGuardianPerson: Person | undefined = undefined;
+      let updatedRelationship: GuardianRelationship | undefined = undefined;
+
+      if (hasGuardian && guardianName.trim()) {
+        const gId = guardianPersonToEdit?.id || `person-g-${Date.now()}`;
+        updatedGuardianPerson = {
+          id: gId,
+          tenantId,
+          fullName: guardianName.trim(),
+          cpf: guardianCpf || guardianPersonToEdit?.cpf || '111.222.333-44',
+          birthDate: guardianPersonToEdit?.birthDate || '1985-01-01',
+          gender: guardianPersonToEdit?.gender || 'other',
+          phone: guardianPhone || guardianPersonToEdit?.phone || phone || '(11) 98888-7777',
+          email: guardianEmail || guardianPersonToEdit?.email || 'responsavel@tatamehub.com.br',
+          address: updatedPerson.address,
+          createdAt: guardianPersonToEdit?.createdAt || new Date().toISOString(),
+        };
+
+        updatedRelationship = {
+          id: guardianRelToEdit?.id || `rel-${Date.now()}`,
+          tenantId,
+          studentId: studentToEdit.id,
+          guardianPersonId: gId,
+          relationshipLabel: relationshipType,
+          isLegalGuardian: true,
+          isFinancialGuardian: true,
+          isEmergencyContact: true,
+          isPickupAuthorized: true,
+        };
+      }
+
+      const updatePayload: UpdateStudentPayload = {
+        studentId: studentToEdit.id,
+        personId: personToEdit.id,
+        tenantId,
+        branchId,
+        fullName: fullName.trim(),
+        socialName: socialName.trim() || undefined,
+        birthDate,
+        cpf,
+        gender,
+        phone,
+        email,
+        city,
+        monthlyFee: Number(monthlyFee) || studentToEdit.monthlyFee,
+        status: studentStatus,
+        martialArtId: selectedArtId,
+        beltRankId: selectedBeltId,
+        selectedArt: chosenArt,
+        selectedBelt: chosenBelt,
+        hasGuardian,
+        guardianPersonId: guardianPersonToEdit?.id,
+        guardianRelId: guardianRelToEdit?.id,
+        guardianName: guardianName.trim(),
+        guardianCpf,
+        guardianPhone,
+        guardianEmail,
+        relationshipType,
+      };
+
+      try {
+        if (onUpdate) {
+          await onUpdate(updatedStudent, updatedPerson, updatedGuardianPerson, updatedRelationship, updatePayload);
+        } else {
+          await onSave(updatedStudent, updatedPerson, updatedGuardianPerson, updatedRelationship);
+        }
+      } catch (err: any) {
+        setError(err?.message || 'Erro ao atualizar dados do aluno.');
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
+
+    // ==========================================
+    // FLUXO DE CRIAÇÃO DE NOVO ALUNO
+    // ==========================================
     const studentPersonId = `person-${Date.now()}`;
     const studentId = `student-${Date.now()}`;
     const now = new Date().toISOString();
@@ -106,9 +303,6 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       createdAt: now,
     };
 
-    const chosenBelt = belts.find(b => b.id === selectedBeltId) || belts[0];
-    const chosenArt = martialArts.find(m => m.id === selectedArtId) || martialArts[0];
-
     const newStudent: Student = {
       id: studentId,
       tenantId,
@@ -116,7 +310,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       personId: studentPersonId,
       registrationNumber: `KOD-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`,
       enrollmentDate: new Date().toISOString().split('T')[0],
-      status: 'active',
+      status: studentStatus,
       currentGraduations: [
         {
           martialArtId: chosenArt?.id || 'art-judo',
@@ -206,11 +400,17 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
 
         <div className="flex items-center gap-2 mb-4">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-red-600/20 text-red-500">
-            <UserPlus className="h-5 w-5" />
+            {isEditing ? <Edit className="h-5 w-5" /> : <UserPlus className="h-5 w-5" />}
           </div>
           <div>
-            <h3 className="text-lg font-bold text-white">Cadastrar Novo Aluno</h3>
-            <p className="text-xs text-slate-400">Preencha os dados de identificação, graduação inicial e responsáveis.</p>
+            <h3 className="text-lg font-bold text-white">
+              {isEditing ? `Editar Aluno: ${personToEdit?.fullName || fullName}` : 'Cadastrar Novo Aluno'}
+            </h3>
+            <p className="text-xs text-slate-400">
+              {isEditing
+                ? `Matrícula: ${studentToEdit?.registrationNumber} · Atualize os dados cadastrais e responsáveis.`
+                : 'Preencha os dados de identificação, graduação inicial e responsáveis.'}
+            </p>
           </div>
         </div>
 
@@ -301,15 +501,38 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
                 />
               </div>
             </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">E-mail do Aluno</label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="aluno@email.com"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">Cidade / Estado</label>
+                <input
+                  type="text"
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  placeholder="São Paulo"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
+                />
+              </div>
+            </div>
           </div>
 
-          {/* Seção 2: Graduação Inicial e Mensalidade */}
+          {/* Seção 2: Modalidade, Graduação e Mensalidade */}
           <div className="p-3.5 rounded-xl border border-slate-800 bg-slate-950/60 space-y-3">
             <div className="font-semibold text-slate-200 text-xs uppercase tracking-wider">
-              2. Modalidade & Mensalidade
+              2. Modalidade, Graduação & Situação
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
               <div>
                 <label className="block text-slate-300 font-medium mb-1">Arte Marcial</label>
                 <select
@@ -337,13 +560,27 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
               </div>
 
               <div>
-                <label className="block text-slate-300 font-medium mb-1">Mensalidade Padrão (R$)</label>
+                <label className="block text-slate-300 font-medium mb-1">Mensalidade (R$)</label>
                 <input
                   type="number"
                   value={monthlyFee}
                   onChange={(e) => setMonthlyFee(e.target.value)}
                   className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none"
                 />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">Situação / Status</label>
+                <select
+                  value={studentStatus}
+                  onChange={(e) => setStudentStatus(e.target.value as any)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none"
+                >
+                  <option value="active">Ativo</option>
+                  <option value="inactive">Inativo</option>
+                  <option value="suspended">Trancado / Suspenso</option>
+                  <option value="dropped">Cancelado</option>
+                </select>
               </div>
             </div>
           </div>
@@ -451,12 +688,12 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
               {isSubmitting ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>Gravando no Banco...</span>
+                  <span>{isEditing ? 'Atualizando no Banco...' : 'Gravando no Banco...'}</span>
                 </>
               ) : (
                 <>
                   <Check className="h-4 w-4" />
-                  <span>Salvar Aluno</span>
+                  <span>{isEditing ? 'Salvar Alterações' : 'Salvar Aluno'}</span>
                 </>
               )}
             </button>

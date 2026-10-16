@@ -60,7 +60,7 @@ import { PlatformAdminView } from './components/superadmin/PlatformAdminView';
 
 // Supabase Real-Time & Auth Services
 import { supabase, authService, isSupabaseConfigured, UserMembership } from './services/supabase';
-import { studentService, CreateStudentPayload, isValidUUID } from './services/studentService';
+import { studentService, CreateStudentPayload, UpdateStudentPayload, isValidUUID } from './services/studentService';
 
 export default function App() {
   // App view navigation
@@ -71,6 +71,7 @@ export default function App() {
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isNewStudentOpen, setIsNewStudentOpen] = useState(false);
+  const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [isUpgradePlanOpen, setIsUpgradePlanOpen] = useState(false);
   const [selectedClassForAttendance, setSelectedClassForAttendance] = useState<ClassGroup | null>(null);
 
@@ -496,6 +497,95 @@ export default function App() {
     setIsNewStudentOpen(false);
   };
 
+  const handleOpenCreateStudent = () => {
+    setEditingStudent(null);
+    setIsNewStudentOpen(true);
+  };
+
+  const handleOpenEditStudent = (student: Student) => {
+    setEditingStudent(student);
+    setIsNewStudentOpen(true);
+  };
+
+  // Handlers for Student Update
+  const handleUpdateStudent = async (
+    updatedStudent: Student,
+    updatedPerson: Person,
+    guardianPerson?: Person,
+    relationship?: GuardianRelationship,
+    payloadDetails?: UpdateStudentPayload
+  ) => {
+    // 1. Prioridade para persistência real no Supabase
+    if (isSupabaseConfigured() && supabase && isValidUUID(currentTenantId) && payloadDetails) {
+      try {
+        const result = await studentService.updateStudent(payloadDetails);
+
+        setStudents((prev) => prev.map((s) => (s.id === result.student.id ? result.student : s)));
+        setPersons((prev) => {
+          const map = new Map(prev.map((p) => [p.id, p]));
+          map.set(result.person.id, result.person);
+          if (result.guardianPerson) {
+            map.set(result.guardianPerson.id, result.guardianPerson);
+          }
+          return Array.from(map.values());
+        });
+        if (result.relationship) {
+          setGuardians((prev) => {
+            const filtered = prev.filter(
+              (g) => g.id !== result.relationship!.id && g.studentId !== result.student.id
+            );
+            return [result.relationship!, ...filtered];
+          });
+        }
+
+        // Cache local
+        DataStore.saveStudents(students.map((s) => (s.id === result.student.id ? result.student : s)));
+
+        setIsNewStudentOpen(false);
+        setEditingStudent(null);
+        return;
+      } catch (err: any) {
+        console.error('Falha ao atualizar aluno no Supabase:', err);
+        throw err;
+      }
+    }
+
+    // 2. Fallback localStorage (modo demonstração local)
+    const updatedStudentsList = students.map((s) => (s.id === updatedStudent.id ? updatedStudent : s));
+    const updatedPersonsList = persons.map((p) => {
+      if (p.id === updatedPerson.id) return updatedPerson;
+      if (guardianPerson && p.id === guardianPerson.id) return guardianPerson;
+      return p;
+    });
+    if (guardianPerson && !updatedPersonsList.some((p) => p.id === guardianPerson.id)) {
+      updatedPersonsList.push(guardianPerson);
+    }
+    const updatedGuardiansList = relationship
+      ? [relationship, ...guardians.filter((g) => g.studentId !== updatedStudent.id)]
+      : guardians;
+
+    DataStore.saveStudents(updatedStudentsList);
+    DataStore.savePersons(updatedPersonsList);
+    DataStore.saveGuardianRelationships(updatedGuardiansList);
+
+    setStudents(updatedStudentsList);
+    setPersons(updatedPersonsList);
+    setGuardians(updatedGuardiansList);
+
+    DataStore.logAudit(
+      currentTenantId,
+      currentUser.id,
+      currentUser.name,
+      'Atualização de Aluno',
+      'Student',
+      updatedStudent.id,
+      `Cadastro do aluno ${updatedPerson.fullName} atualizado localmente.`
+    );
+
+    setIsNewStudentOpen(false);
+    setEditingStudent(null);
+  };
+
   // Handlers for Attendance
   const handleSaveAttendance = (records: AttendanceRecord[]) => {
     const updated = [...records, ...attendances];
@@ -762,7 +852,7 @@ export default function App() {
               exams={beltExams}
               auditLogs={auditLogs}
               onNavigateTab={setAdminTab}
-              onOpenNewStudent={() => setIsNewStudentOpen(true)}
+              onOpenNewStudent={handleOpenCreateStudent}
             />
           )}
 
@@ -777,8 +867,8 @@ export default function App() {
               classes={classes}
               enrollments={enrollments}
               isLoading={isLoadingStudents}
-              onOpenCreateStudent={() => setIsNewStudentOpen(true)}
-              onEditStudent={() => {}}
+              onOpenCreateStudent={handleOpenCreateStudent}
+              onEditStudent={handleOpenEditStudent}
             />
           )}
 
@@ -1007,12 +1097,29 @@ export default function App() {
 
       <StudentFormModal
         isOpen={isNewStudentOpen}
-        onClose={() => setIsNewStudentOpen(false)}
+        onClose={() => {
+          setIsNewStudentOpen(false);
+          setEditingStudent(null);
+        }}
         tenantId={currentTenantId}
         branchId={currentBranchId}
         belts={beltRanks}
         martialArts={martialArts}
+        studentToEdit={editingStudent}
+        personToEdit={editingStudent ? persons.find((p) => p.id === editingStudent.personId) : null}
+        guardianRelToEdit={
+          editingStudent ? guardians.find((g) => g.studentId === editingStudent.id) : null
+        }
+        guardianPersonToEdit={
+          editingStudent
+            ? (() => {
+                const rel = guardians.find((g) => g.studentId === editingStudent.id);
+                return rel ? persons.find((p) => p.id === rel.guardianPersonId) : null;
+              })()
+            : null
+        }
         onSave={handleSaveStudent}
+        onUpdate={handleUpdateStudent}
       />
 
       {selectedClassForAttendance && (

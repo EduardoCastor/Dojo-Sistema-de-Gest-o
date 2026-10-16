@@ -34,6 +34,35 @@ export interface CreateStudentPayload {
   relationshipType?: string;
 }
 
+export interface UpdateStudentPayload {
+  studentId: string;
+  personId: string;
+  tenantId: string;
+  branchId: string;
+  fullName: string;
+  birthDate: string;
+  cpf?: string;
+  socialName?: string;
+  gender: 'male' | 'female' | 'other';
+  phone?: string;
+  email?: string;
+  city?: string;
+  monthlyFee: number;
+  status: 'active' | 'inactive' | 'suspended' | 'dropped';
+  martialArtId: string;
+  beltRankId: string;
+  selectedBelt?: BeltRank;
+  selectedArt?: MartialArt;
+  hasGuardian?: boolean;
+  guardianPersonId?: string;
+  guardianRelId?: string;
+  guardianName?: string;
+  guardianCpf?: string;
+  guardianPhone?: string;
+  guardianEmail?: string;
+  relationshipType?: string;
+}
+
 export interface StudentServiceResult {
   student: Student;
   person: Person;
@@ -593,6 +622,304 @@ export const studentService = {
       person: resultPerson,
       guardianPerson: createdGuardianPerson,
       relationship: createdRelationship,
+    };
+  },
+
+  /**
+   * Atualiza dados de um aluno existente no Supabase.
+   * Modifica `persons`, `students`, e `guardian_relationships` preservando integridade e RLS.
+   */
+  async updateStudent(payload: UpdateStudentPayload): Promise<StudentServiceResult> {
+    if (!isSupabaseConfigured() || !supabase) {
+      throw new Error('Supabase não configurado');
+    }
+
+    if (!isValidUUID(payload.tenantId)) {
+      throw new Error('ID da academia (tenant_id) deve ser um UUID válido no Supabase.');
+    }
+
+    if (!isValidUUID(payload.studentId) || !isValidUUID(payload.personId)) {
+      throw new Error('Identificadores de aluno ou pessoa física inválidos.');
+    }
+
+    // 1. Atualizar registro na tabela persons
+    const personAddress = {
+      street: 'Rua das Flores',
+      number: '123',
+      neighborhood: 'Centro',
+      city: payload.city || 'São Paulo',
+      state: 'SP',
+      zipCode: '01000-000',
+    };
+
+    const { data: updatedPerson, error: personError } = await supabase
+      .from('persons')
+      .update({
+        full_name: payload.fullName.trim(),
+        social_name: payload.socialName?.trim() || null,
+        cpf: payload.cpf?.trim() || null,
+        birth_date: payload.birthDate,
+        gender: payload.gender || 'male',
+        phone: payload.phone?.trim() || null,
+        email: payload.email?.trim() || null,
+        address: personAddress,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', payload.personId)
+      .eq('tenant_id', payload.tenantId)
+      .select()
+      .single();
+
+    if (personError) {
+      throw new Error(`Erro ao atualizar dados pessoais do aluno: ${personError.message}`);
+    }
+
+    if (!updatedPerson) {
+      throw new Error('Nenhum registro de pessoa localizado para atualização ou permissão negada.');
+    }
+
+    // 2. Atualizar registro na tabela students
+    const { data: updatedStudentData, error: studentError } = await supabase
+      .from('students')
+      .update({
+        monthly_fee: payload.monthlyFee,
+        status: payload.status || 'active',
+        branch_id: payload.branchId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', payload.studentId)
+      .eq('tenant_id', payload.tenantId)
+      .select()
+      .single();
+
+    if (studentError) {
+      throw new Error(`Erro ao atualizar matrícula do aluno: ${studentError.message}`);
+    }
+
+    if (!updatedStudentData) {
+      throw new Error('Nenhum registro de aluno localizado para atualização ou permissão negada.');
+    }
+
+    // 3. Atualizar ou Vincular Responsável Legal / Financeiro
+    let resultGuardianPerson: Person | undefined = undefined;
+    let resultRelationship: GuardianRelationship | undefined = undefined;
+
+    if (payload.hasGuardian && payload.guardianName?.trim()) {
+      if (payload.guardianPersonId && isValidUUID(payload.guardianPersonId)) {
+        // Atualizar responsável existente
+        const { data: gpData } = await supabase
+          .from('persons')
+          .update({
+            full_name: payload.guardianName.trim(),
+            cpf: payload.guardianCpf?.trim() || null,
+            phone: payload.guardianPhone?.trim() || null,
+            email: payload.guardianEmail?.trim() || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', payload.guardianPersonId)
+          .eq('tenant_id', payload.tenantId)
+          .select()
+          .single();
+
+        if (gpData) {
+          resultGuardianPerson = {
+            id: gpData.id,
+            tenantId: gpData.tenant_id,
+            fullName: gpData.full_name,
+            cpf: gpData.cpf || '',
+            birthDate: gpData.birth_date,
+            gender: gpData.gender,
+            phone: gpData.phone || '',
+            email: gpData.email || '',
+            address: gpData.address || {},
+            createdAt: gpData.created_at,
+          };
+        }
+
+        if (payload.guardianRelId && isValidUUID(payload.guardianRelId)) {
+          const { data: grData } = await supabase
+            .from('guardian_relationships')
+            .update({
+              relationship_label: payload.relationshipType || 'Responsável',
+            })
+            .eq('id', payload.guardianRelId)
+            .eq('tenant_id', payload.tenantId)
+            .select()
+            .single();
+
+          if (grData && resultGuardianPerson) {
+            resultRelationship = {
+              id: grData.id,
+              tenantId: grData.tenant_id,
+              studentId: payload.studentId,
+              guardianPersonId: resultGuardianPerson.id,
+              relationshipLabel: grData.relationship_label,
+              isLegalGuardian: grData.is_legal_guardian,
+              isFinancialGuardian: grData.is_financial_guardian,
+              isEmergencyContact: grData.is_emergency_contact,
+              isPickupAuthorized: grData.is_pickup_authorized,
+            };
+          }
+        }
+      } else {
+        // Inserir novo responsável para este aluno
+        const { data: newGp } = await supabase
+          .from('persons')
+          .insert({
+            tenant_id: payload.tenantId,
+            full_name: payload.guardianName.trim(),
+            cpf: payload.guardianCpf?.trim() || null,
+            birth_date: '1985-01-01',
+            gender: 'other',
+            phone: payload.guardianPhone?.trim() || null,
+            email: payload.guardianEmail?.trim() || 'responsavel@tatamehub.com.br',
+            address: personAddress,
+          })
+          .select()
+          .single();
+
+        if (newGp) {
+          resultGuardianPerson = {
+            id: newGp.id,
+            tenantId: newGp.tenant_id,
+            fullName: newGp.full_name,
+            cpf: newGp.cpf || '',
+            birthDate: newGp.birth_date,
+            gender: newGp.gender,
+            phone: newGp.phone || '',
+            email: newGp.email || '',
+            address: newGp.address || {},
+            createdAt: newGp.created_at,
+          };
+
+          const { data: newGr } = await supabase
+            .from('guardian_relationships')
+            .insert({
+              tenant_id: payload.tenantId,
+              student_id: payload.studentId,
+              guardian_person_id: newGp.id,
+              relationship_label: payload.relationshipType || 'Responsável',
+              is_legal_guardian: true,
+              is_financial_guardian: true,
+              is_emergency_contact: true,
+              is_pickup_authorized: true,
+            })
+            .select()
+            .single();
+
+          if (newGr) {
+            resultRelationship = {
+              id: newGr.id,
+              tenantId: newGr.tenant_id,
+              studentId: payload.studentId,
+              guardianPersonId: newGp.id,
+              relationshipLabel: newGr.relationship_label,
+              isLegalGuardian: newGr.is_legal_guardian,
+              isFinancialGuardian: newGr.is_financial_guardian,
+              isEmergencyContact: newGr.is_emergency_contact,
+              isPickupAuthorized: newGr.is_pickup_authorized,
+            };
+          }
+        }
+      }
+    }
+
+    // 4. Se a graduação mudou e são UUIDs válidos
+    if (isValidUUID(payload.martialArtId) && isValidUUID(payload.beltRankId)) {
+      try {
+        const { data: existingGrad } = await supabase
+          .from('student_graduations')
+          .select('id')
+          .eq('student_id', payload.studentId)
+          .eq('tenant_id', payload.tenantId)
+          .limit(1);
+
+        if (existingGrad && existingGrad.length > 0) {
+          await supabase
+            .from('student_graduations')
+            .update({
+              martial_art_id: payload.martialArtId,
+              belt_rank_id: payload.beltRankId,
+            })
+            .eq('id', existingGrad[0].id)
+            .eq('tenant_id', payload.tenantId);
+        } else {
+          await supabase
+            .from('student_graduations')
+            .insert({
+              tenant_id: payload.tenantId,
+              student_id: payload.studentId,
+              martial_art_id: payload.martialArtId,
+              belt_rank_id: payload.beltRankId,
+              examiner_name: 'Sensei Responsável',
+            });
+        }
+      } catch (gErr) {
+        console.warn('Aviso ao sincronizar graduação no Supabase:', gErr);
+      }
+    }
+
+    // 5. Registrar log de auditoria
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const currentSession = sessionData?.session;
+      const currentUserId = currentSession?.user?.id;
+      if (currentUserId) {
+        await supabase.from('audit_logs').insert({
+          tenant_id: payload.tenantId,
+          user_id: currentUserId,
+          user_name: currentSession.user.user_metadata?.full_name || 'Usuário',
+          action: 'Atualização de Aluno',
+          entity: 'Student',
+          entity_id: payload.studentId,
+          details: `Cadastro do aluno "${payload.fullName}" atualizado com sucesso.`,
+        });
+      }
+    } catch (auditErr) {
+      console.warn('Aviso: falha ao registrar audit log da edição:', auditErr);
+    }
+
+    const finalPerson: Person = {
+      id: payload.personId,
+      tenantId: payload.tenantId,
+      fullName: payload.fullName.trim(),
+      socialName: payload.socialName?.trim() || undefined,
+      cpf: payload.cpf || '',
+      birthDate: payload.birthDate,
+      gender: payload.gender,
+      phone: payload.phone || '',
+      email: payload.email || '',
+      address: updatedPerson.address || personAddress,
+      createdAt: updatedPerson.created_at,
+    };
+
+    const finalStudent: Student = {
+      id: payload.studentId,
+      tenantId: payload.tenantId,
+      branchId: payload.branchId,
+      personId: payload.personId,
+      registrationNumber: updatedStudentData.registration_number,
+      enrollmentDate: updatedStudentData.enrollment_date,
+      status: updatedStudentData.status,
+      currentGraduations: [
+        {
+          martialArtId: payload.selectedArt?.id || payload.martialArtId,
+          martialArtName: payload.selectedArt?.name || 'Judô',
+          beltId: payload.selectedBelt?.id || payload.beltRankId,
+          beltName: payload.selectedBelt?.name || 'Faixa Atualizada',
+          beltColorHex: payload.selectedBelt?.colorHex || '#ffffff',
+          graduatedAt: updatedStudentData.enrollment_date,
+        },
+      ],
+      monthlyFee: Number(updatedStudentData.monthly_fee) || payload.monthlyFee,
+      notes: updatedStudentData.notes || undefined,
+    };
+
+    return {
+      student: finalStudent,
+      person: finalPerson,
+      guardianPerson: resultGuardianPerson,
+      relationship: resultRelationship,
     };
   },
 };

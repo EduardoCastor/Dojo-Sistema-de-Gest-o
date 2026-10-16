@@ -1,5 +1,6 @@
 import React from 'react';
 import { ArrowRight, CheckCircle2, Award, Calendar, Users, Wallet } from 'lucide-react';
+import dojoImage from '../../assets/images/hero_martial_arts_dojo_1792068007714.jpg';
 
 interface HeroSectionProps {
   onOpenRegister: () => void;
@@ -64,7 +65,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onOpenRegister, onOpen
           <div className="lg:col-span-5 relative">
             <div className="relative rounded-2xl overflow-hidden border border-slate-700/80 shadow-2xl bg-slate-900">
               <img
-                src="/src/assets/images/hero_martial_arts_dojo_1792068007714.jpg"
+                src={dojoImage}
                 alt="Dojo de Judô e Tatami Profissional"
                 className="w-full h-[360px] sm:h-[420px] object-cover"
                 referrerPolicy="no-referrer"

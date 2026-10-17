@@ -36,6 +36,8 @@ export interface CreateStudentPayload {
   relationshipType?: string;
   reusedPersonId?: string;
   reusedGuardianPersonId?: string;
+  guardianPersonId?: string;
+  guardianRelId?: string;
 }
 
 export interface UpdateStudentPayload {
@@ -739,176 +741,184 @@ export const studentService = {
     const textSearch = (searchTerm || '').toLowerCase().trim();
 
     if (isSupabaseConfigured() && supabase && isValidUUID(tenantId)) {
+      // 1. Tentar via RPC atômica search_guardians_summary
       try {
-        // 1. Buscar todos os vínculos de responsáveis com os dados da pessoa do responsável e do aluno
-        const { data: relsData, error: relsError } = await supabase
-          .from('guardian_relationships')
-          .select(`
-            id,
-            tenant_id,
-            student_id,
-            guardian_person_id,
-            relationship_label,
-            is_legal_guardian,
-            is_financial_guardian,
-            is_emergency_contact,
-            is_pickup_authorized,
-            notes,
-            guardian:persons!fk_guardians_person (
-              id,
-              tenant_id,
-              full_name,
-              social_name,
-              cpf,
-              birth_date,
-              gender,
-              phone,
-              email,
-              address,
-              created_at
-            ),
-            student:students!fk_guardians_student (
-              id,
-              registration_number,
-              status,
-              enrollment_date,
-              person:persons!fk_students_person (
-                id,
-                full_name,
-                cpf,
-                birth_date,
-                phone,
-                email
-              )
-            )
-          `)
-          .eq('tenant_id', tenantId);
+        const { data: rpcData, error: rpcErr } = await supabase.rpc('search_guardians_summary', {
+          p_tenant_id: tenantId,
+          p_search_query: searchTerm || null,
+        });
 
-        if (relsError) {
-          console.error('Erro ao consultar responsáveis no Supabase:', relsError);
+        if (!rpcErr && Array.isArray(rpcData)) {
+          return rpcData.map((item: any) => ({
+            person: {
+              id: item.person_id,
+              tenantId,
+              fullName: item.full_name,
+              socialName: item.social_name || undefined,
+              cpf: item.cpf || '',
+              birthDate: item.birth_date,
+              gender: item.gender || 'other',
+              phone: item.phone || '',
+              email: item.email || '',
+              address: item.address || {},
+              createdAt: item.created_at || new Date().toISOString(),
+            },
+            isStudent: Boolean(item.is_student),
+            studentProfile: item.is_student
+              ? {
+                  id: item.student_id,
+                  registrationNumber: item.registration_number,
+                  status: item.student_status,
+                  enrollmentDate: '',
+                }
+              : undefined,
+            dependents: (item.dependents || []).map((d: any) => ({
+              relationshipId: d.relationship_id,
+              studentId: d.student_id,
+              relationshipLabel: d.relationship_label,
+              isLegalGuardian: Boolean(d.is_legal_guardian),
+              isFinancialGuardian: Boolean(d.is_financial_guardian),
+              isEmergencyContact: Boolean(d.is_emergency_contact),
+              isPickupAuthorized: Boolean(d.is_pickup_authorized),
+              notes: d.notes,
+              studentRegistrationNumber: d.student_registration_number,
+              studentStatus: d.student_status,
+              studentPerson: {
+                id: d.student_id,
+                tenantId,
+                fullName: d.student_name,
+                cpf: '',
+                birthDate: '2010-01-01',
+                gender: 'male',
+                phone: '',
+                email: '',
+                address: {} as any,
+                createdAt: new Date().toISOString(),
+              },
+            })),
+          }));
         }
+      } catch (rpcEx) {
+        console.warn('search_guardians_summary RPC indisponível, usando fallback direto:', rpcEx);
+      }
 
-        // 2. Buscar também se existem responsáveis cadastrados como alunos
-        const { data: allStudentsData } = await supabase
-          .from('students')
-          .select(`
-            id,
-            person_id,
-            registration_number,
-            status,
-            enrollment_date,
-            graduations:student_graduations (
-              id,
-              graduated_at,
-              belt:belt_ranks (name, color_hex),
-              martial_art:martial_arts (name)
-            )
-          `)
-          .eq('tenant_id', tenantId);
+      // 2. Fallback direto Supabase (sem embeddings de composite foreign key)
+      try {
+        const [personsRes, relsRes, studentsRes] = await Promise.all([
+          supabase.from('persons').select('*').eq('tenant_id', tenantId),
+          supabase.from('guardian_relationships').select('*').eq('tenant_id', tenantId),
+          supabase.from('students').select('id, person_id, registration_number, status, enrollment_date').eq('tenant_id', tenantId),
+        ]);
+
+        const dbPersons: any[] = personsRes.data || [];
+        const dbRels: any[] = relsRes.data || [];
+        const dbStudents: any[] = studentsRes.data || [];
 
         const studentByPersonId = new Map<string, any>();
-        (allStudentsData || []).forEach((st: any) => {
-          studentByPersonId.set(st.person_id, st);
+        dbStudents.forEach((st) => studentByPersonId.set(st.person_id, st));
+
+        const studentById = new Map<string, any>();
+        dbStudents.forEach((st) => studentById.set(st.id, st));
+
+        const personById = new Map<string, any>();
+        dbPersons.forEach((p) => personById.set(p.id, p));
+
+        // Pessoas que são responsáveis (possuem vínculo) OU que batem com a busca
+        const guardianPersonIds = new Set(dbRels.map((r) => r.guardian_person_id));
+        const matchedPersons = dbPersons.filter((p) => {
+          if (guardianPersonIds.has(p.id)) return true;
+          if (!searchTerm) return false;
+          const matchesName = p.full_name?.toLowerCase().includes(textSearch);
+          const matchesCpf = cleanSearch && cleanCPF(p.cpf).includes(cleanSearch);
+          return matchesName || matchesCpf;
         });
 
-        // 3. Agrupar por responsável
-        const guardiansMap = new Map<string, GuardianSummaryItem>();
+        const result: GuardianSummaryItem[] = matchedPersons.map((p) => {
+          const stProfile = studentByPersonId.get(p.id);
+          const pRels = dbRels.filter((r) => r.guardian_person_id === p.id);
 
-        (relsData || []).forEach((r: any) => {
-          const gp = r.guardian;
-          if (!gp) return;
-
-          const guardianId = gp.id;
-          if (!guardiansMap.has(guardianId)) {
-            const stProfile = studentByPersonId.get(guardianId);
-            const latestGrad = stProfile?.graduations?.sort(
-              (a: any, b: any) => new Date(b.graduated_at).getTime() - new Date(a.graduated_at).getTime()
-            )?.[0];
-
-            guardiansMap.set(guardianId, {
-              person: {
-                id: gp.id,
-                tenantId: gp.tenant_id,
-                fullName: gp.full_name,
-                socialName: gp.social_name || undefined,
-                cpf: gp.cpf || '',
-                birthDate: gp.birth_date,
-                gender: gp.gender || 'other',
-                phone: gp.phone || '',
-                email: gp.email || '',
-                address: gp.address || {},
-                createdAt: gp.created_at,
+          const dependents = pRels.map((r) => {
+            const st = studentById.get(r.student_id);
+            const sp = st ? personById.get(st.person_id) : null;
+            return {
+              relationshipId: r.id,
+              studentId: r.student_id,
+              relationshipLabel: r.relationship_label || 'Responsável',
+              isLegalGuardian: Boolean(r.is_legal_guardian),
+              isFinancialGuardian: Boolean(r.is_financial_guardian),
+              isEmergencyContact: Boolean(r.is_emergency_contact),
+              isPickupAuthorized: Boolean(r.is_pickup_authorized),
+              notes: r.notes || undefined,
+              studentRegistrationNumber: st?.registration_number || 'MAT-000',
+              studentStatus: st?.status || 'active',
+              studentPerson: sp ? {
+                id: sp.id,
+                tenantId: sp.tenant_id,
+                fullName: sp.full_name,
+                socialName: sp.social_name || undefined,
+                cpf: sp.cpf || '',
+                birthDate: sp.birth_date,
+                gender: ((sp.gender as 'male' | 'female' | 'other') || 'other') as 'male' | 'female' | 'other',
+                phone: sp.phone || '',
+                email: sp.email || '',
+                address: sp.address || {},
+                createdAt: sp.created_at,
+              } : {
+                id: r.student_id,
+                tenantId,
+                fullName: 'Aluno',
+                cpf: '',
+                birthDate: '2010-01-01',
+                gender: 'male' as const,
+                phone: '',
+                email: '',
+                address: {} as any,
+                createdAt: new Date().toISOString(),
               },
-              isStudent: Boolean(stProfile),
-              studentProfile: stProfile
-                ? {
-                    id: stProfile.id,
-                    registrationNumber: stProfile.registration_number,
-                    status: stProfile.status,
-                    enrollmentDate: stProfile.enrollment_date,
-                    beltName: latestGrad?.belt?.name,
-                    beltColorHex: latestGrad?.belt?.color_hex,
-                    martialArtName: latestGrad?.martial_art?.name,
-                  }
-                : undefined,
-              dependents: [],
-            });
-          }
-
-          const item = guardiansMap.get(guardianId)!;
-          const st = r.student;
-          const sp = st?.person;
-
-          item.dependents.push({
-            relationshipId: r.id,
-            studentId: r.student_id,
-            relationshipLabel: r.relationship_label || 'Responsável',
-            isLegalGuardian: Boolean(r.is_legal_guardian),
-            isFinancialGuardian: Boolean(r.is_financial_guardian),
-            isEmergencyContact: Boolean(r.is_emergency_contact),
-            isPickupAuthorized: Boolean(r.is_pickup_authorized),
-            notes: r.notes || undefined,
-            studentRegistrationNumber: st?.registration_number || 'MAT-000',
-            studentStatus: st?.status || 'active',
-            studentPerson: {
-              id: sp?.id || r.student_id,
-              tenantId,
-              fullName: sp?.full_name || 'Aluno',
-              cpf: sp?.cpf || '',
-              birthDate: sp?.birth_date || '2015-01-01',
-              gender: 'male',
-              phone: sp?.phone || '',
-              email: sp?.email || '',
-              address: sp?.address || {
-                street: '',
-                number: '',
-                neighborhood: '',
-                city: 'São Paulo',
-                state: 'SP',
-                zipCode: '',
-              },
-              createdAt: new Date().toISOString(),
-            },
+            };
           });
+
+          return {
+            person: {
+              id: p.id,
+              tenantId: p.tenant_id,
+              fullName: p.full_name,
+              socialName: p.social_name || undefined,
+              cpf: p.cpf || '',
+              birthDate: p.birth_date,
+              gender: ((p.gender as 'male' | 'female' | 'other') || 'other') as 'male' | 'female' | 'other',
+              phone: p.phone || '',
+              email: p.email || '',
+              address: p.address || {},
+              createdAt: p.created_at,
+            },
+            isStudent: Boolean(stProfile),
+            studentProfile: stProfile ? {
+              id: stProfile.id,
+              registrationNumber: stProfile.registration_number,
+              status: stProfile.status,
+              enrollmentDate: stProfile.enrollment_date,
+            } : undefined,
+            dependents,
+          };
         });
 
-        let result = Array.from(guardiansMap.values());
-
-        // Filtrar por busca (nome ou CPF limpo)
+        // Filtrar pelo termo de busca
         if (textSearch || cleanSearch) {
-          result = result.filter((g) => {
+          return result.filter((g) => {
             const matchesName = g.person.fullName.toLowerCase().includes(textSearch);
             const matchesCpf = cleanSearch && cleanCPF(g.person.cpf).includes(cleanSearch);
             const matchesDependent = g.dependents.some((d) =>
-              d.studentPerson.fullName.toLowerCase().includes(textSearch)
+              d.studentPerson.fullName.toLowerCase().includes(textSearch) ||
+              d.studentRegistrationNumber.toLowerCase().includes(textSearch)
             );
             return matchesName || matchesCpf || matchesDependent;
-          });
+          }).sort((a, b) => a.person.fullName.localeCompare(b.person.fullName));
         }
 
         return result.sort((a, b) => a.person.fullName.localeCompare(b.person.fullName));
-      } catch (err) {
-        console.warn('Erro ao consultar resumo de responsáveis:', err);
+      } catch (directErr) {
+        console.warn('Erro ao consultar responsáveis via fallback direto:', directErr);
       }
     }
 
@@ -1127,40 +1137,27 @@ export const studentService = {
         return null;
       }
 
-      // 2. Buscar vínculos de responsáveis
+      // 2. Buscar TODOS os registros de persons da academia ativa no Supabase (alunos e responsáveis)
+      const { data: allPersonsData, error: personsError } = await supabase
+        .from('persons')
+        .select('*')
+        .eq('tenant_id', tenantId);
+
+      if (personsError) {
+        console.warn('Aviso ao carregar pessoas do Supabase:', personsError.message);
+      }
+
+      // 3. Buscar vínculos de responsáveis na tabela guardian_relationships
       const { data: guardiansData, error: guardiansError } = await supabase
         .from('guardian_relationships')
-        .select(`
-          id,
-          tenant_id,
-          student_id,
-          guardian_person_id,
-          relationship_label,
-          is_legal_guardian,
-          is_financial_guardian,
-          is_emergency_contact,
-          is_pickup_authorized,
-          notes,
-          guardian:persons!guardian_person_id (
-            id,
-            tenant_id,
-            full_name,
-            cpf,
-            birth_date,
-            gender,
-            phone,
-            email,
-            address,
-            created_at
-          )
-        `)
+        .select('*')
         .eq('tenant_id', tenantId);
 
       if (guardiansError) {
         console.warn('Aviso ao carregar responsáveis do Supabase:', guardiansError.message);
       }
 
-      // 3. Buscar histórico de graduações
+      // 4. Buscar histórico de graduações
       const { data: graduationsData } = await supabase
         .from('student_graduations')
         .select(`
@@ -1175,11 +1172,37 @@ export const studentService = {
         `)
         .eq('tenant_id', tenantId);
 
-      // Normalizar para os tipos do frontend
+      // Normalizar TODAS as pessoas da academia (alunos e responsáveis)
       const loadedPersons: Person[] = [];
       const personMap = new Map<string, Person>();
 
+      (allPersonsData || []).forEach((p: any) => {
+        const parsedPerson: Person = {
+          id: p.id,
+          tenantId: p.tenant_id,
+          fullName: p.full_name,
+          socialName: p.social_name || undefined,
+          cpf: p.cpf || '',
+          birthDate: p.birth_date,
+          gender: (p.gender as any) || 'male',
+          phone: p.phone || '',
+          email: p.email || '',
+          address: {
+            street: p.address?.street || '',
+            number: p.address?.number || '',
+            neighborhood: p.address?.neighborhood || '',
+            city: p.address?.city || '',
+            state: p.address?.state || 'SP',
+            zipCode: p.address?.zipCode || '',
+          },
+          createdAt: p.created_at || new Date().toISOString(),
+        };
+        personMap.set(p.id, parsedPerson);
+        loadedPersons.push(parsedPerson);
+      });
+
       const loadedStudents: Student[] = (studentsData || []).map((row: any) => {
+        // Se a pessoa do aluno não estava na lista geral, incluir
         const p = row.person;
         if (p && !personMap.has(p.id)) {
           const parsedPerson: Person = {
@@ -1240,46 +1263,18 @@ export const studentService = {
         };
       });
 
-      const loadedGuardians: GuardianRelationship[] = [];
-      (guardiansData || []).forEach((row: any) => {
-        const gp = row.guardian;
-        if (gp && !personMap.has(gp.id)) {
-          const parsedGuardianPerson: Person = {
-            id: gp.id,
-            tenantId: gp.tenant_id,
-            fullName: gp.full_name,
-            cpf: gp.cpf || '',
-            birthDate: gp.birth_date || '1985-01-01',
-            gender: (gp.gender as any) || 'other',
-            phone: gp.phone || '',
-            email: gp.email || '',
-            address: {
-              street: gp.address?.street || '',
-              number: gp.address?.number || '',
-              neighborhood: gp.address?.neighborhood || '',
-              city: gp.address?.city || '',
-              state: gp.address?.state || 'SP',
-              zipCode: gp.address?.zipCode || '',
-            },
-            createdAt: gp.created_at || new Date().toISOString(),
-          };
-          personMap.set(gp.id, parsedGuardianPerson);
-          loadedPersons.push(parsedGuardianPerson);
-        }
-
-        loadedGuardians.push({
-          id: row.id,
-          tenantId: row.tenant_id,
-          studentId: row.student_id,
-          guardianPersonId: row.guardian_person_id,
-          relationshipLabel: row.relationship_label,
-          isLegalGuardian: Boolean(row.is_legal_guardian),
-          isFinancialGuardian: Boolean(row.is_financial_guardian),
-          isEmergencyContact: Boolean(row.is_emergency_contact),
-          isPickupAuthorized: Boolean(row.is_pickup_authorized),
-          notes: row.notes || undefined,
-        });
-      });
+      const loadedGuardians: GuardianRelationship[] = (guardiansData || []).map((row: any) => ({
+        id: row.id,
+        tenantId: row.tenant_id,
+        studentId: row.student_id,
+        guardianPersonId: row.guardian_person_id,
+        relationshipLabel: row.relationship_label || 'Responsável',
+        isLegalGuardian: Boolean(row.is_legal_guardian),
+        isFinancialGuardian: Boolean(row.is_financial_guardian),
+        isEmergencyContact: Boolean(row.is_emergency_contact),
+        isPickupAuthorized: Boolean(row.is_pickup_authorized),
+        notes: row.notes || undefined,
+      }));
 
       return {
         students: loadedStudents,
@@ -1371,7 +1366,9 @@ export const studentService = {
       notes: null,
     };
 
+    const effectiveReusedGuardianId = payload.reusedGuardianPersonId || payload.guardianPersonId;
     const guardianPersonPayload = (payload.hasGuardian && payload.guardianName?.trim()) ? {
+      id: effectiveReusedGuardianId || null,
       full_name: payload.guardianName.trim(),
       cpf: payload.guardianCpf?.trim() || null,
       birth_date: '1985-01-01',
@@ -1578,41 +1575,107 @@ export const studentService = {
 
     if (guardianPersonPayload) {
       try {
-        const { data: gpData } = await supabase
-          .from('persons')
-          .insert({
-            tenant_id: payload.tenantId,
-            full_name: guardianPersonPayload.full_name,
-            cpf: guardianPersonPayload.cpf,
-            birth_date: guardianPersonPayload.birth_date,
-            gender: guardianPersonPayload.gender,
-            phone: guardianPersonPayload.phone,
-            email: guardianPersonPayload.email,
-            address: personPayload.address,
-          })
-          .select()
-          .single();
+        let guardianPersonIdToLink: string | null = payload.reusedGuardianPersonId || payload.guardianPersonId || null;
 
-        if (gpData) {
-          createdGuardianPerson = {
-            id: gpData.id,
-            tenantId: payload.tenantId,
-            fullName: gpData.full_name,
-            cpf: gpData.cpf || '',
-            birthDate: gpData.birth_date,
-            gender: gpData.gender,
-            phone: gpData.phone || '',
-            email: gpData.email || '',
-            address: personPayload.address,
-            createdAt: gpData.created_at,
-          };
+        // Se NÃO temos o ID de um responsável existente, verificar se pessoa com esse CPF já existe no tenant
+        if (!guardianPersonIdToLink && guardianPersonPayload.cpf) {
+          const cleanGCpf = cleanCPF(guardianPersonPayload.cpf);
+          const { data: existingPersonByCpf } = await supabase
+            .from('persons')
+            .select('*')
+            .eq('tenant_id', payload.tenantId)
+            .eq('cpf', cleanGCpf)
+            .maybeSingle();
 
-          const { data: grData } = await supabase
+          if (existingPersonByCpf) {
+            guardianPersonIdToLink = existingPersonByCpf.id;
+            createdGuardianPerson = {
+              id: existingPersonByCpf.id,
+              tenantId: payload.tenantId,
+              fullName: existingPersonByCpf.full_name,
+              cpf: existingPersonByCpf.cpf || '',
+              birthDate: existingPersonByCpf.birth_date,
+              gender: existingPersonByCpf.gender,
+              phone: existingPersonByCpf.phone || '',
+              email: existingPersonByCpf.email || '',
+              address: existingPersonByCpf.address || {},
+              createdAt: existingPersonByCpf.created_at,
+            };
+          }
+        }
+
+        // Se ainda não temos a pessoa, inserir nova em persons
+        if (!guardianPersonIdToLink) {
+          const { data: gpData, error: gpErr } = await supabase
+            .from('persons')
+            .insert({
+              tenant_id: payload.tenantId,
+              full_name: guardianPersonPayload.full_name,
+              cpf: cleanCPF(guardianPersonPayload.cpf) || null,
+              birth_date: guardianPersonPayload.birth_date,
+              gender: guardianPersonPayload.gender,
+              phone: guardianPersonPayload.phone,
+              email: guardianPersonPayload.email,
+              address: personPayload.address,
+            })
+            .select()
+            .single();
+
+          if (gpErr) {
+            console.error('Erro ao inserir novo responsável:', gpErr);
+          } else if (gpData) {
+            guardianPersonIdToLink = gpData.id;
+            createdGuardianPerson = {
+              id: gpData.id,
+              tenantId: payload.tenantId,
+              fullName: gpData.full_name,
+              cpf: gpData.cpf || '',
+              birthDate: gpData.birth_date,
+              gender: gpData.gender,
+              phone: gpData.phone || '',
+              email: gpData.email || '',
+              address: personPayload.address,
+              createdAt: gpData.created_at,
+            };
+          }
+        } else if (!createdGuardianPerson) {
+          // Atualiza dados da pessoa existente
+          const { data: gpData } = await supabase
+            .from('persons')
+            .update({
+              full_name: guardianPersonPayload.full_name,
+              phone: guardianPersonPayload.phone,
+              email: guardianPersonPayload.email,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', guardianPersonIdToLink)
+            .select()
+            .maybeSingle();
+
+          if (gpData) {
+            createdGuardianPerson = {
+              id: gpData.id,
+              tenantId: gpData.tenant_id,
+              fullName: gpData.full_name,
+              cpf: gpData.cpf || '',
+              birthDate: gpData.birth_date,
+              gender: gpData.gender,
+              phone: gpData.phone || '',
+              email: gpData.email || '',
+              address: gpData.address || {},
+              createdAt: gpData.created_at,
+            };
+          }
+        }
+
+        // Criar o vínculo em guardian_relationships
+        if (guardianPersonIdToLink) {
+          const { data: grData, error: grErr } = await supabase
             .from('guardian_relationships')
             .insert({
               tenant_id: payload.tenantId,
               student_id: createdStudentId,
-              guardian_person_id: gpData.id,
+              guardian_person_id: guardianPersonIdToLink,
               relationship_label: payload.relationshipType || 'Responsável',
               is_legal_guardian: true,
               is_financial_guardian: true,
@@ -1622,12 +1685,14 @@ export const studentService = {
             .select()
             .single();
 
-          if (grData) {
+          if (grErr) {
+            console.error('Erro ao criar vínculo de responsável:', grErr);
+          } else if (grData) {
             createdRelationship = {
               id: grData.id,
               tenantId: payload.tenantId,
               studentId: createdStudentId,
-              guardianPersonId: gpData.id,
+              guardianPersonId: guardianPersonIdToLink,
               relationshipLabel: grData.relationship_label,
               isLegalGuardian: grData.is_legal_guardian,
               isFinancialGuardian: grData.is_financial_guardian,
@@ -1637,7 +1702,7 @@ export const studentService = {
           }
         }
       } catch (gErr) {
-        console.warn('Aviso: Responsável não pode ser persistido:', gErr);
+        console.error('Falha ao persistir responsável ou vínculo no fallback:', gErr);
       }
     }
 

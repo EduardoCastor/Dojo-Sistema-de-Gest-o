@@ -1,5 +1,7 @@
 import { supabase, isSupabaseConfigured } from './supabase';
 import { Student, Person, GuardianRelationship, BeltRank, MartialArt } from '../types';
+import { cleanCPF, validateCPF, formatCPF } from '../utils/cpfValidator';
+import { DataStore } from '../data/storage';
 
 /**
  * Validador de formato UUID v4 para evitar erro 'invalid input syntax for type uuid'
@@ -32,6 +34,8 @@ export interface CreateStudentPayload {
   guardianPhone?: string;
   guardianEmail?: string;
   relationshipType?: string;
+  reusedPersonId?: string;
+  reusedGuardianPersonId?: string;
 }
 
 export interface UpdateStudentPayload {
@@ -61,6 +65,35 @@ export interface UpdateStudentPayload {
   guardianPhone?: string;
   guardianEmail?: string;
   relationshipType?: string;
+  reusedGuardianPersonId?: string;
+}
+
+export interface GuardianSummaryItem {
+  person: Person;
+  isStudent: boolean;
+  studentProfile?: {
+    id: string;
+    registrationNumber: string;
+    status: string;
+    enrollmentDate: string;
+    beltName?: string;
+    beltColorHex?: string;
+    martialArtName?: string;
+  };
+  dependents: {
+    relationshipId: string;
+    studentId: string;
+    relationshipLabel: string;
+    isLegalGuardian: boolean;
+    isFinancialGuardian: boolean;
+    isEmergencyContact: boolean;
+    isPickupAuthorized: boolean;
+    notes?: string;
+    studentRegistrationNumber: string;
+    studentStatus: string;
+    studentPerson: Person;
+    studentGraduations?: any[];
+  }[];
 }
 
 export interface StudentServiceResult {
@@ -508,6 +541,543 @@ export const studentService = {
   },
 
   /**
+   * Localiza uma pessoa cadastrada na academia informada pelo CPF (normalizado/11 dígitos).
+   * Retorna os dados pessoais, se ela é aluno(a), se ela é responsável e dependentes vinculados.
+   */
+  async findPersonByCpf(tenantId: string, cpfInput: string): Promise<{
+    person: Person | null;
+    isStudent: boolean;
+    student?: Student;
+    isGuardian: boolean;
+    dependentsCount: number;
+    dependents?: { studentId: string; studentName: string; relationshipLabel: string }[];
+  } | null> {
+    const clean = cleanCPF(cpfInput);
+    if (!clean || clean.length !== 11) {
+      return null;
+    }
+
+    if (isSupabaseConfigured() && supabase && isValidUUID(tenantId)) {
+      try {
+        // Consultar pessoas do tenant que tenham o CPF (limpo ou formatado)
+        const { data: personsData, error } = await supabase
+          .from('persons')
+          .select('id, tenant_id, full_name, social_name, cpf, birth_date, gender, phone, email, address, created_at')
+          .eq('tenant_id', tenantId)
+          .in('cpf', [clean, formatCPF(clean)])
+          .limit(1);
+
+        if (error || !personsData || personsData.length === 0) {
+          return null;
+        }
+
+        const rawPerson = personsData[0];
+        const person: Person = {
+          id: rawPerson.id,
+          tenantId: rawPerson.tenant_id,
+          fullName: rawPerson.full_name,
+          socialName: rawPerson.social_name || undefined,
+          cpf: rawPerson.cpf || clean,
+          birthDate: rawPerson.birth_date,
+          gender: rawPerson.gender || 'male',
+          phone: rawPerson.phone || '',
+          email: rawPerson.email || '',
+          address: rawPerson.address || {},
+          createdAt: rawPerson.created_at,
+        };
+
+        // Verificar se esta pessoa já possui registro em students
+        const { data: studentRows } = await supabase
+          .from('students')
+          .select('id, tenant_id, branch_id, person_id, registration_number, enrollment_date, status, monthly_fee, notes')
+          .eq('tenant_id', tenantId)
+          .eq('person_id', person.id)
+        let student: Student | undefined = undefined;
+        if (studentRows && studentRows.length > 0) {
+          const sr = studentRows[0];
+          student = {
+            id: sr.id,
+            tenantId: sr.tenant_id,
+            branchId: sr.branch_id,
+            personId: sr.person_id,
+            registrationNumber: sr.registration_number,
+            enrollmentDate: sr.enrollment_date,
+            status: sr.status,
+            currentGraduations: [],
+            monthlyFee: Number(sr.monthly_fee) || 0,
+            notes: sr.notes || undefined,
+          };
+        }
+        const isStudent = Boolean(student);
+
+        // Verificar vínculos de responsável
+        const { data: guardianRows } = await supabase
+          .from('guardian_relationships')
+          .select(`
+            id,
+            relationship_label,
+            student_id,
+            student:students (
+              id,
+              registration_number,
+              person:persons (id, full_name)
+            )
+          `)
+          .eq('tenant_id', tenantId)
+          .eq('guardian_person_id', person.id);
+
+        const dependents = (guardianRows || []).map((row: any) => ({
+          studentId: row.student_id,
+          studentName: row.student?.person?.full_name || 'Aluno',
+          relationshipLabel: row.relationship_label,
+        }));
+
+        return {
+          person,
+          isStudent,
+          student,
+          isGuardian: dependents.length > 0,
+          dependentsCount: dependents.length,
+          dependents,
+        };
+      } catch (err) {
+        console.warn('Erro ao consultar pessoa por CPF no Supabase:', err);
+      }
+    }
+
+    // Fallback: LocalStorage / DataStore
+    const localPersons = DataStore.getPersons(tenantId);
+    const matched = localPersons.find((p) => cleanCPF(p.cpf) === clean);
+    if (!matched) return null;
+
+    const localStudents = DataStore.getStudents(tenantId);
+    const student = localStudents.find((s) => s.personId === matched.id);
+    const localRels = DataStore.getGuardianRelationships(tenantId).filter((r) => r.guardianPersonId === matched.id);
+
+    const dependents = localRels.map((r) => {
+      const st = localStudents.find((s) => s.id === r.studentId);
+      const sp = localPersons.find((p) => p.id === st?.personId);
+      return {
+        studentId: r.studentId,
+        studentName: sp?.fullName || 'Aluno',
+        relationshipLabel: r.relationshipLabel,
+      };
+    });
+
+    return {
+      person: matched,
+      isStudent: Boolean(student),
+      student,
+      isGuardian: dependents.length > 0,
+      dependentsCount: dependents.length,
+      dependents,
+    };
+  },
+
+  /**
+   * Valida unicidade de CPF na mesma academia (tenant_id).
+   * Impede que duas pessoas distintas utilizem o mesmo CPF.
+   * Permite que a pessoa sendo editada (excludePersonId) mantenha seu próprio CPF.
+   */
+  async checkCpfDuplicity(
+    tenantId: string,
+    cpfInput: string,
+    excludePersonId?: string
+  ): Promise<{
+    isDuplicate: boolean;
+    existingPerson?: Person;
+    isStudent?: boolean;
+    isGuardian?: boolean;
+    message?: string;
+  }> {
+    const clean = cleanCPF(cpfInput);
+    if (!clean || clean.length !== 11) {
+      return { isDuplicate: false };
+    }
+
+    // 1. Validação matemática do CPF primeiro
+    const validation = validateCPF(clean);
+    if (!validation.isValid) {
+      return {
+        isDuplicate: false,
+        message: validation.error,
+      };
+    }
+
+    const found = await this.findPersonByCpf(tenantId, clean);
+    if (!found || !found.person) {
+      return { isDuplicate: false };
+    }
+
+    // Se a pessoa encontrada for o próprio registro que está sendo editado, não é duplicidade
+    if (excludePersonId && found.person.id === excludePersonId) {
+      return { isDuplicate: false };
+    }
+
+    const roleDesc =
+      found.isStudent && found.isGuardian
+        ? 'Aluno e Responsável'
+        : found.isStudent
+        ? 'Aluno'
+        : 'Responsável';
+
+    return {
+      isDuplicate: true,
+      existingPerson: found.person,
+      isStudent: found.isStudent,
+      isGuardian: found.isGuardian,
+      message: `Este CPF já está cadastrado para ${found.person.fullName} (${roleDesc}) nesta academia.`,
+    };
+  },
+
+  /**
+   * Consulta o resumo de todos os responsáveis da academia ativa, seus dependentes
+   * e indica se o responsável também possui matrícula de aluno no Dojo.
+   */
+  async fetchGuardiansSummary(tenantId: string, searchTerm?: string): Promise<GuardianSummaryItem[]> {
+    const cleanSearch = cleanCPF(searchTerm || '');
+    const textSearch = (searchTerm || '').toLowerCase().trim();
+
+    if (isSupabaseConfigured() && supabase && isValidUUID(tenantId)) {
+      try {
+        // 1. Buscar todos os vínculos de responsáveis com os dados da pessoa do responsável e do aluno
+        const { data: relsData, error: relsError } = await supabase
+          .from('guardian_relationships')
+          .select(`
+            id,
+            tenant_id,
+            student_id,
+            guardian_person_id,
+            relationship_label,
+            is_legal_guardian,
+            is_financial_guardian,
+            is_emergency_contact,
+            is_pickup_authorized,
+            notes,
+            guardian:persons!fk_guardians_person (
+              id,
+              tenant_id,
+              full_name,
+              social_name,
+              cpf,
+              birth_date,
+              gender,
+              phone,
+              email,
+              address,
+              created_at
+            ),
+            student:students!fk_guardians_student (
+              id,
+              registration_number,
+              status,
+              enrollment_date,
+              person:persons!fk_students_person (
+                id,
+                full_name,
+                cpf,
+                birth_date,
+                phone,
+                email
+              )
+            )
+          `)
+          .eq('tenant_id', tenantId);
+
+        if (relsError) {
+          console.error('Erro ao consultar responsáveis no Supabase:', relsError);
+        }
+
+        // 2. Buscar também se existem responsáveis cadastrados como alunos
+        const { data: allStudentsData } = await supabase
+          .from('students')
+          .select(`
+            id,
+            person_id,
+            registration_number,
+            status,
+            enrollment_date,
+            graduations:student_graduations (
+              id,
+              graduated_at,
+              belt:belt_ranks (name, color_hex),
+              martial_art:martial_arts (name)
+            )
+          `)
+          .eq('tenant_id', tenantId);
+
+        const studentByPersonId = new Map<string, any>();
+        (allStudentsData || []).forEach((st: any) => {
+          studentByPersonId.set(st.person_id, st);
+        });
+
+        // 3. Agrupar por responsável
+        const guardiansMap = new Map<string, GuardianSummaryItem>();
+
+        (relsData || []).forEach((r: any) => {
+          const gp = r.guardian;
+          if (!gp) return;
+
+          const guardianId = gp.id;
+          if (!guardiansMap.has(guardianId)) {
+            const stProfile = studentByPersonId.get(guardianId);
+            const latestGrad = stProfile?.graduations?.sort(
+              (a: any, b: any) => new Date(b.graduated_at).getTime() - new Date(a.graduated_at).getTime()
+            )?.[0];
+
+            guardiansMap.set(guardianId, {
+              person: {
+                id: gp.id,
+                tenantId: gp.tenant_id,
+                fullName: gp.full_name,
+                socialName: gp.social_name || undefined,
+                cpf: gp.cpf || '',
+                birthDate: gp.birth_date,
+                gender: gp.gender || 'other',
+                phone: gp.phone || '',
+                email: gp.email || '',
+                address: gp.address || {},
+                createdAt: gp.created_at,
+              },
+              isStudent: Boolean(stProfile),
+              studentProfile: stProfile
+                ? {
+                    id: stProfile.id,
+                    registrationNumber: stProfile.registration_number,
+                    status: stProfile.status,
+                    enrollmentDate: stProfile.enrollment_date,
+                    beltName: latestGrad?.belt?.name,
+                    beltColorHex: latestGrad?.belt?.color_hex,
+                    martialArtName: latestGrad?.martial_art?.name,
+                  }
+                : undefined,
+              dependents: [],
+            });
+          }
+
+          const item = guardiansMap.get(guardianId)!;
+          const st = r.student;
+          const sp = st?.person;
+
+          item.dependents.push({
+            relationshipId: r.id,
+            studentId: r.student_id,
+            relationshipLabel: r.relationship_label || 'Responsável',
+            isLegalGuardian: Boolean(r.is_legal_guardian),
+            isFinancialGuardian: Boolean(r.is_financial_guardian),
+            isEmergencyContact: Boolean(r.is_emergency_contact),
+            isPickupAuthorized: Boolean(r.is_pickup_authorized),
+            notes: r.notes || undefined,
+            studentRegistrationNumber: st?.registration_number || 'MAT-000',
+            studentStatus: st?.status || 'active',
+            studentPerson: {
+              id: sp?.id || r.student_id,
+              tenantId,
+              fullName: sp?.full_name || 'Aluno',
+              cpf: sp?.cpf || '',
+              birthDate: sp?.birth_date || '2015-01-01',
+              gender: 'male',
+              phone: sp?.phone || '',
+              email: sp?.email || '',
+              address: sp?.address || {
+                street: '',
+                number: '',
+                neighborhood: '',
+                city: 'São Paulo',
+                state: 'SP',
+                zipCode: '',
+              },
+              createdAt: new Date().toISOString(),
+            },
+          });
+        });
+
+        let result = Array.from(guardiansMap.values());
+
+        // Filtrar por busca (nome ou CPF limpo)
+        if (textSearch || cleanSearch) {
+          result = result.filter((g) => {
+            const matchesName = g.person.fullName.toLowerCase().includes(textSearch);
+            const matchesCpf = cleanSearch && cleanCPF(g.person.cpf).includes(cleanSearch);
+            const matchesDependent = g.dependents.some((d) =>
+              d.studentPerson.fullName.toLowerCase().includes(textSearch)
+            );
+            return matchesName || matchesCpf || matchesDependent;
+          });
+        }
+
+        return result.sort((a, b) => a.person.fullName.localeCompare(b.person.fullName));
+      } catch (err) {
+        console.warn('Erro ao consultar resumo de responsáveis:', err);
+      }
+    }
+
+    // Fallback: DataStore
+    const localPersons = DataStore.getPersons(tenantId);
+    const localRels = DataStore.getGuardianRelationships(tenantId);
+    const localStudents = DataStore.getStudents(tenantId);
+
+    const guardiansMap = new Map<string, GuardianSummaryItem>();
+
+    localRels.forEach((r) => {
+      const gp = localPersons.find((p) => p.id === r.guardianPersonId);
+      if (!gp) return;
+
+      if (!guardiansMap.has(gp.id)) {
+        const stProfile = localStudents.find((s) => s.personId === gp.id);
+        const grad = stProfile?.currentGraduations?.[0];
+
+        guardiansMap.set(gp.id, {
+          person: gp,
+          isStudent: Boolean(stProfile),
+          studentProfile: stProfile
+            ? {
+                id: stProfile.id,
+                registrationNumber: stProfile.registrationNumber,
+                status: stProfile.status,
+                enrollmentDate: stProfile.enrollmentDate,
+                beltName: grad?.beltName,
+                beltColorHex: grad?.beltColorHex,
+                martialArtName: grad?.martialArtName,
+              }
+            : undefined,
+          dependents: [],
+        });
+      }
+
+      const item = guardiansMap.get(gp.id)!;
+      const st = localStudents.find((s) => s.id === r.studentId);
+      const sp = localPersons.find((p) => p.id === st?.personId);
+
+      item.dependents.push({
+        relationshipId: r.id,
+        studentId: r.studentId,
+        relationshipLabel: r.relationshipLabel,
+        isLegalGuardian: r.isLegalGuardian,
+        isFinancialGuardian: r.isFinancialGuardian,
+        isEmergencyContact: r.isEmergencyContact,
+        isPickupAuthorized: r.isPickupAuthorized,
+        notes: r.notes,
+        studentRegistrationNumber: st?.registrationNumber || 'MAT-000',
+        studentStatus: st?.status || 'active',
+        studentPerson: sp || {
+          id: r.studentId,
+          tenantId,
+          fullName: 'Aluno',
+          cpf: '',
+          birthDate: '2015-01-01',
+          gender: 'male',
+          phone: '',
+          email: '',
+          address: {
+            street: '',
+            number: '',
+            neighborhood: '',
+            city: 'São Paulo',
+            state: 'SP',
+            zipCode: '',
+          },
+          createdAt: new Date().toISOString(),
+        },
+      });
+    });
+
+    let result = Array.from(guardiansMap.values());
+
+    if (textSearch || cleanSearch) {
+      result = result.filter((g) => {
+        const matchesName = g.person.fullName.toLowerCase().includes(textSearch);
+        const matchesCpf = cleanSearch && cleanCPF(g.person.cpf).includes(cleanSearch);
+        const matchesDependent = g.dependents.some((d) =>
+          d.studentPerson.fullName.toLowerCase().includes(textSearch)
+        );
+        return matchesName || matchesCpf || matchesDependent;
+      });
+    }
+
+    return result.sort((a, b) => a.person.fullName.localeCompare(b.person.fullName));
+  },
+
+  /**
+   * Atualiza os dados de contato de uma pessoa responsável.
+   */
+  async updateGuardianPerson(
+    tenantId: string,
+    personId: string,
+    updates: Partial<{
+      fullName: string;
+      cpf: string;
+      phone: string;
+      email: string;
+      address: any;
+    }>
+  ): Promise<Person> {
+    if (updates.cpf) {
+      const clean = cleanCPF(updates.cpf);
+      const val = validateCPF(clean);
+      if (!val.isValid) {
+        throw new Error(`CPF do responsável inválido: ${val.error}`);
+      }
+      const dupl = await this.checkCpfDuplicity(tenantId, clean, personId);
+      if (dupl.isDuplicate) {
+        throw new Error(dupl.message);
+      }
+    }
+
+    if (isSupabaseConfigured() && supabase && isValidUUID(tenantId) && isValidUUID(personId)) {
+      const dbPayload: any = { updated_at: new Date().toISOString() };
+      if (updates.fullName !== undefined) dbPayload.full_name = updates.fullName.trim();
+      if (updates.cpf !== undefined) dbPayload.cpf = cleanCPF(updates.cpf) || null;
+      if (updates.phone !== undefined) dbPayload.phone = updates.phone.trim() || null;
+      if (updates.email !== undefined) dbPayload.email = updates.email.trim() || null;
+      if (updates.address !== undefined) dbPayload.address = updates.address;
+
+      const { data, error } = await supabase
+        .from('persons')
+        .update(dbPayload)
+        .eq('id', personId)
+        .eq('tenant_id', tenantId)
+        .select()
+        .single();
+
+      if (error || !data) {
+        throw new Error(`Erro ao atualizar dados do responsável: ${error?.message || 'Falha na resposta'}`);
+      }
+
+      return {
+        id: data.id,
+        tenantId: data.tenant_id,
+        fullName: data.full_name,
+        socialName: data.social_name || undefined,
+        cpf: data.cpf || '',
+        birthDate: data.birth_date,
+        gender: data.gender || 'other',
+        phone: data.phone || '',
+        email: data.email || '',
+        address: data.address || {},
+        createdAt: data.created_at,
+      };
+    }
+
+    // Fallback: DataStore
+    const localPersons = DataStore.getPersons(tenantId);
+    const existing = localPersons.find((p) => p.id === personId);
+    if (!existing) throw new Error('Responsável não localizado');
+
+    const updated: Person = {
+      ...existing,
+      fullName: updates.fullName !== undefined ? updates.fullName.trim() : existing.fullName,
+      cpf: updates.cpf !== undefined ? cleanCPF(updates.cpf) : existing.cpf,
+      phone: updates.phone !== undefined ? updates.phone.trim() : existing.phone,
+      email: updates.email !== undefined ? updates.email.trim() : existing.email,
+      address: updates.address !== undefined ? updates.address : existing.address,
+    };
+
+    DataStore.savePersons(localPersons.map((p) => (p.id === personId ? updated : p)));
+    return updated;
+  },
+
+  /**
    * Consulta a lista de alunos da academia informada (filtrada por tenant_id e RLS).
    * Retorna os registros normalizados para o modelo utilizado na interface do React.
    */
@@ -736,12 +1306,49 @@ export const studentService = {
       throw new Error('ID da academia (tenant_id) deve ser um UUID válido no Supabase.');
     }
 
+    // 1. Validação matemática rigorosa do CPF do Aluno e verificação de duplicidade por tenant
+    const studentCpfClean = cleanCPF(payload.cpf);
+    if (studentCpfClean) {
+      const valStudent = validateCPF(studentCpfClean);
+      if (!valStudent.isValid) {
+        throw new Error(`CPF do aluno inválido: ${valStudent.error}`);
+      }
+      const dupl = await this.checkCpfDuplicity(payload.tenantId, studentCpfClean);
+      if (dupl.isDuplicate) {
+        if (dupl.isStudent) {
+          throw new Error(`CPF em duplicidade: Este CPF já possui uma matrícula de aluno ativa nesta academia (${dupl.existingPerson?.fullName}).`);
+        }
+        // Se a pessoa já existe na academia (ex: é um responsável) e NÃO possui matrícula de aluno ainda,
+        // permitimos reaproveitar esta mesma pessoa para a nova matrícula de aluno
+        if (!payload.reusedPersonId && dupl.existingPerson) {
+          payload.reusedPersonId = dupl.existingPerson.id;
+        }
+      }
+    }
+
+    // 2. Validação matemática do CPF do Responsável e reaproveitamento inteligente
+    if (payload.hasGuardian && payload.guardianName?.trim()) {
+      const guardianCpfClean = cleanCPF(payload.guardianCpf);
+      if (guardianCpfClean) {
+        const valGuardian = validateCPF(guardianCpfClean);
+        if (!valGuardian.isValid) {
+          throw new Error(`CPF do responsável inválido: ${valGuardian.error}`);
+        }
+        if (!payload.reusedGuardianPersonId) {
+          const foundGuardian = await this.findPersonByCpf(payload.tenantId, guardianCpfClean);
+          if (foundGuardian?.person) {
+            payload.reusedGuardianPersonId = foundGuardian.person.id;
+          }
+        }
+      }
+    }
+
     const regNumber = `MAT-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
 
     const personPayload = {
       full_name: payload.fullName.trim(),
       social_name: payload.socialName?.trim() || null,
-      cpf: payload.cpf?.trim() || null,
+      cpf: studentCpfClean || null,
       birth_date: payload.birthDate,
       gender: payload.gender || 'male',
       phone: payload.phone?.trim() || null,
@@ -1110,6 +1717,37 @@ export const studentService = {
       throw new Error('Identificadores de aluno ou pessoa física inválidos.');
     }
 
+    // 0. Validações matemáticas de CPF e proteção contra duplicidade
+    const studentCpfClean = cleanCPF(payload.cpf);
+    if (studentCpfClean) {
+      const valStudent = validateCPF(studentCpfClean);
+      if (!valStudent.isValid) {
+        throw new Error(`CPF do aluno inválido: ${valStudent.error}`);
+      }
+      const dupl = await this.checkCpfDuplicity(payload.tenantId, studentCpfClean, payload.personId);
+      if (dupl.isDuplicate) {
+        throw new Error(dupl.message);
+      }
+    }
+
+    let effectiveGuardianPersonId = payload.guardianPersonId || payload.reusedGuardianPersonId;
+
+    if (payload.hasGuardian && payload.guardianName?.trim()) {
+      const guardianCpfClean = cleanCPF(payload.guardianCpf);
+      if (guardianCpfClean) {
+        const valGuardian = validateCPF(guardianCpfClean);
+        if (!valGuardian.isValid) {
+          throw new Error(`CPF do responsável inválido: ${valGuardian.error}`);
+        }
+
+        // Buscar se já existe uma pessoa com este CPF para reaproveitar
+        const found = await this.findPersonByCpf(payload.tenantId, guardianCpfClean);
+        if (found?.person) {
+          effectiveGuardianPersonId = found.person.id;
+        }
+      }
+    }
+
     // 1. Atualizar registro na tabela persons
     const personAddress = {
       street: 'Rua das Flores',
@@ -1125,7 +1763,7 @@ export const studentService = {
       .update({
         full_name: payload.fullName.trim(),
         social_name: payload.socialName?.trim() || null,
-        cpf: payload.cpf?.trim() || null,
+        cpf: studentCpfClean || null,
         birth_date: payload.birthDate,
         gender: payload.gender || 'male',
         phone: payload.phone?.trim() || null,
@@ -1173,18 +1811,18 @@ export const studentService = {
     let resultRelationship: GuardianRelationship | undefined = undefined;
 
     if (payload.hasGuardian && payload.guardianName?.trim()) {
-      if (payload.guardianPersonId && isValidUUID(payload.guardianPersonId)) {
+      if (effectiveGuardianPersonId && isValidUUID(effectiveGuardianPersonId)) {
         // Atualizar responsável existente
         const { data: gpData } = await supabase
           .from('persons')
           .update({
             full_name: payload.guardianName.trim(),
-            cpf: payload.guardianCpf?.trim() || null,
+            cpf: cleanCPF(payload.guardianCpf) || null,
             phone: payload.guardianPhone?.trim() || null,
             email: payload.guardianEmail?.trim() || null,
             updated_at: new Date().toISOString(),
           })
-          .eq('id', payload.guardianPersonId)
+          .eq('id', effectiveGuardianPersonId)
           .eq('tenant_id', payload.tenantId)
           .select()
           .single();
@@ -1209,6 +1847,7 @@ export const studentService = {
             .from('guardian_relationships')
             .update({
               relationship_label: payload.relationshipType || 'Responsável',
+              guardian_person_id: effectiveGuardianPersonId,
             })
             .eq('id', payload.guardianRelId)
             .eq('tenant_id', payload.tenantId)
@@ -1228,15 +1867,45 @@ export const studentService = {
               isPickupAuthorized: grData.is_pickup_authorized,
             };
           }
+        } else {
+          // Criar novo vínculo com a pessoa de responsável
+          const { data: grData } = await supabase
+            .from('guardian_relationships')
+            .insert({
+              tenant_id: payload.tenantId,
+              student_id: payload.studentId,
+              guardian_person_id: effectiveGuardianPersonId,
+              relationship_label: payload.relationshipType || 'Responsável',
+              is_legal_guardian: true,
+              is_financial_guardian: true,
+              is_emergency_contact: true,
+              is_pickup_authorized: true,
+            })
+            .select()
+            .single();
+
+          if (grData && resultGuardianPerson) {
+            resultRelationship = {
+              id: grData.id,
+              tenantId: grData.tenant_id,
+              studentId: payload.studentId,
+              guardianPersonId: resultGuardianPerson.id,
+              relationshipLabel: grData.relationship_label,
+              isLegalGuardian: grData.is_legal_guardian,
+              isFinancialGuardian: grData.is_financial_guardian,
+              isEmergencyContact: grData.is_emergency_contact,
+              isPickupAuthorized: grData.is_pickup_authorized,
+            };
+          }
         }
       } else {
-        // Inserir novo responsável para este aluno
+        // Inserir novo responsável para este aluno caso realmente não exista no sistema
         const { data: newGp } = await supabase
           .from('persons')
           .insert({
             tenant_id: payload.tenantId,
             full_name: payload.guardianName.trim(),
-            cpf: payload.guardianCpf?.trim() || null,
+            cpf: cleanCPF(payload.guardianCpf) || null,
             birth_date: '1985-01-01',
             gender: 'other',
             phone: payload.guardianPhone?.trim() || null,

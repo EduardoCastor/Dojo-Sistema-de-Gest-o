@@ -382,7 +382,7 @@ export const INITIAL_PERSONS: Person[] = [
     id: 'person-lucas',
     tenantId: 'tenant-kodokan',
     fullName: 'Lucas Oliveira Silva',
-    cpf: '543.210.987-01',
+    cpf: '193.852.925-10',
     birthDate: '2015-04-12', // 11 anos
     gender: 'male',
     phone: '(11) 98555-6677',
@@ -402,7 +402,7 @@ export const INITIAL_PERSONS: Person[] = [
     id: 'person-sofia',
     tenantId: 'tenant-kodokan',
     fullName: 'Sofia Oliveira Silva',
-    cpf: '654.321.098-12',
+    cpf: '236.621.175-92',
     birthDate: '2018-08-20', // 8 anos
     gender: 'female',
     phone: '(11) 98555-6677',
@@ -422,7 +422,7 @@ export const INITIAL_PERSONS: Person[] = [
     id: 'person-marcos',
     tenantId: 'tenant-kodokan',
     fullName: 'Marcos Antônio Silva',
-    cpf: '123.456.789-00',
+    cpf: '037.920.938-12',
     birthDate: '1984-06-15',
     gender: 'male',
     phone: '(11) 98666-7788',
@@ -442,7 +442,7 @@ export const INITIAL_PERSONS: Person[] = [
     id: 'person-camila',
     tenantId: 'tenant-kodokan',
     fullName: 'Camila Oliveira Silva',
-    cpf: '234.567.890-11',
+    cpf: '457.370.480-98',
     birthDate: '1986-09-22',
     gender: 'female',
     phone: '(11) 97111-2233',
@@ -462,7 +462,7 @@ export const INITIAL_PERSONS: Person[] = [
     id: 'person-gabriel',
     tenantId: 'tenant-kodokan',
     fullName: 'Gabriel Souza Santos',
-    cpf: '345.678.901-22',
+    cpf: '206.297.796-43',
     birthDate: '2009-02-10', // 17 anos
     gender: 'male',
     phone: '(11) 99222-3344',
@@ -482,7 +482,7 @@ export const INITIAL_PERSONS: Person[] = [
     id: 'person-beatriz',
     tenantId: 'tenant-kodokan',
     fullName: 'Beatriz Ferreira',
-    cpf: '456.789.012-33',
+    cpf: '177.824.039-95',
     birthDate: '2003-11-05', // 22 anos
     gender: 'female',
     phone: '(11) 99444-5566',

@@ -76,12 +76,7 @@ export function calculateBMI(weightKg?: number | null, heightCm?: number | null)
   return { bmi, classification };
 }
 
-export function formatCPF(cpf?: string | null): string {
-  if (!cpf) return '-';
-  const clean = String(cpf).replace(/\D/g, '');
-  if (clean.length !== 11) return cpf;
-  return clean.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
-}
+export { formatCPF, cleanCPF, validateCPF, maskCPFInput } from './cpfValidator';
 
 export function formatCNPJ(cnpj?: string | null): string {
   if (!cnpj) return '-';

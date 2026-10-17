@@ -498,7 +498,12 @@ export default function App() {
 
     // 2. Fallback localStorage (modo demonstração local)
     const updatedStudents = [...students, newStudent];
-    const updatedPersons = guardianPerson ? [...persons, newPerson, guardianPerson] : [...persons, newPerson];
+    const personsMap = new Map(persons.map((p) => [p.id, p]));
+    personsMap.set(newPerson.id, newPerson);
+    if (guardianPerson) {
+      personsMap.set(guardianPerson.id, guardianPerson);
+    }
+    const updatedPersons = Array.from(personsMap.values());
     const updatedGuardians = relationship ? [...guardians, relationship] : guardians;
 
     // Generate initial invoice for this student

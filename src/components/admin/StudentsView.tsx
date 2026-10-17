@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Search,
   Plus,
@@ -15,6 +15,11 @@ import {
   FileText,
   AlertCircle,
   FileCheck,
+  UserCheck,
+  Link as LinkIcon,
+  Phone,
+  Mail,
+  GraduationCap,
 } from 'lucide-react';
 import {
   Student,
@@ -62,6 +67,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   onOpenCreateStudent,
   onEditStudent,
 }) => {
+  const [viewMode, setViewMode] = useState<'students' | 'guardians'>('students');
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
@@ -92,39 +98,123 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   };
 
   // Filter students
-  const filteredStudents = students.filter((s) => {
-    const person = getStudentPerson(s);
+  const filteredStudents = useMemo(() => {
+    return students.filter((s) => {
+      const person = getStudentPerson(s);
 
-    const matchesSearch =
-      (person.fullName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (s.registrationNumber || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (person.cpf ? person.cpf.includes(searchTerm) : false);
+      const matchesSearch =
+        (person.fullName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (s.registrationNumber || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (person.cpf ? person.cpf.includes(searchTerm) : false);
 
-    const matchesStatus =
-      statusFilter === 'all' || s.status === statusFilter;
+      const matchesStatus =
+        statusFilter === 'all' || s.status === statusFilter;
 
-    return matchesSearch && matchesStatus;
-  });
+      return matchesSearch && matchesStatus;
+    });
+  }, [students, persons, searchTerm, statusFilter]);
+
+  // Agrupamento consolidado de todos os Responsáveis da academia ativa
+  const guardiansGrouped = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        person: Person;
+        isStudent: boolean;
+        studentRecord?: Student;
+        dependents: {
+          student: Student;
+          studentPerson: Person;
+          relationship: GuardianRelationship;
+        }[];
+      }
+    >();
+
+    guardians.forEach((rel) => {
+      const gPerson = persons.find((p) => p.id === rel.guardianPersonId);
+      if (!gPerson) return;
+
+      const student = students.find((s) => s.id === rel.studentId);
+      const studentPerson = student ? getStudentPerson(student) : null;
+      if (!student || !studentPerson) return;
+
+      if (!map.has(gPerson.id)) {
+        // Verificar se este responsável também possui matrícula de aluno no Dojo
+        const matchingStudent = students.find((s) => s.personId === gPerson.id);
+        map.set(gPerson.id, {
+          person: gPerson,
+          isStudent: Boolean(matchingStudent),
+          studentRecord: matchingStudent,
+          dependents: [],
+        });
+      }
+
+      map.get(gPerson.id)!.dependents.push({
+        student,
+        studentPerson,
+        relationship: rel,
+      });
+    });
+
+    return Array.from(map.values());
+  }, [guardians, persons, students]);
+
+  // Responsáveis filtrados pela busca
+  const filteredGuardians = useMemo(() => {
+    const term = searchTerm.toLowerCase().trim();
+    if (!term) return guardiansGrouped;
+
+    return guardiansGrouped.filter((item) => {
+      const matchesName = item.person.fullName.toLowerCase().includes(term);
+      const matchesCpf = item.person.cpf ? item.person.cpf.includes(term) : false;
+      const matchesDependent = item.dependents.some((d) =>
+        d.studentPerson.fullName.toLowerCase().includes(term) ||
+        d.student.registrationNumber.toLowerCase().includes(term)
+      );
+      return matchesName || matchesCpf || matchesDependent;
+    });
+  }, [guardiansGrouped, searchTerm]);
 
   const getStudentGuardians = (studentId: string) => {
-    const rels = guardians.filter(g => g.studentId === studentId);
-    return rels.map(r => ({
-      relationship: r,
-      person: persons.find(p => p.id === r.guardianPersonId),
-    }));
+    const rels = guardians.filter((g) => g.studentId === studentId);
+    return rels.map((r) => {
+      const gPerson = persons.find((p) => p.id === r.guardianPersonId);
+      // Verificar se o responsável também é aluno
+      const isAlsoStudent = students.some((s) => s.personId === gPerson?.id);
+      // Verificar outros dependentes vinculados a esse mesmo responsável
+      const otherDependents = guardians
+        .filter((otherRel) => otherRel.guardianPersonId === r.guardianPersonId && otherRel.studentId !== studentId)
+        .map((otherRel) => {
+          const st = students.find((s) => s.id === otherRel.studentId);
+          const stPerson = st ? getStudentPerson(st) : null;
+          return {
+            student: st,
+            person: stPerson,
+            relationshipLabel: otherRel.relationshipLabel,
+          };
+        })
+        .filter((d) => d.student && d.person);
+
+      return {
+        relationship: r,
+        person: gPerson,
+        isAlsoStudent,
+        otherDependents,
+      };
+    });
   };
 
   const getStudentAssessments = (studentId: string) => {
-    return assessments.filter(a => a.studentId === studentId).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    return assessments.filter((a) => a.studentId === studentId).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   };
 
   const getStudentHealthRecord = (studentId: string) => {
-    return healthRecords.find(h => h.studentId === studentId);
+    return healthRecords.find((h) => h.studentId === studentId);
   };
 
   const getStudentClasses = (studentId: string) => {
-    const studentEnr = enrollments.filter(e => e.studentId === studentId && e.status === 'active');
-    return studentEnr.map(e => classes.find(c => c.id === e.classGroupId)).filter(Boolean) as ClassGroup[];
+    const studentEnrollments = enrollments.filter((e) => e.studentId === studentId && e.status === 'active');
+    return classes.filter((c) => studentEnrollments.some((e) => e.classGroupId === c.id));
   };
 
   const activePerson = selectedStudent ? getStudentPerson(selectedStudent) : null;
@@ -140,9 +230,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
       {/* Header & Controls */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold text-white tracking-tight">Gestão de Alunos & Prontuários</h2>
+          <h2 className="text-xl font-bold text-white tracking-tight">Gestão de Alunos, Responsáveis & Famílias</h2>
           <p className="text-xs text-slate-400">
-            Ficha cadastral completa, histórico esportivo, responsáveis e prontuário de saúde protegido.
+            Ficha cadastral completa, validação de CPF, vínculos familiares sem duplicidade e prontuários esportivos.
           </p>
         </div>
 
@@ -155,6 +245,33 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
         </button>
       </div>
 
+      {/* Navegação entre Visualização de Alunos vs. Vínculos Familiares */}
+      <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
+        <button
+          onClick={() => setViewMode('students')}
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+            viewMode === 'students'
+              ? 'bg-red-600 text-white shadow'
+              : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-white'
+          }`}
+        >
+          <User className="h-4 w-4" />
+          <span>Alunos Matriculados ({students.length})</span>
+        </button>
+
+        <button
+          onClick={() => setViewMode('guardians')}
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+            viewMode === 'guardians'
+              ? 'bg-red-600 text-white shadow'
+              : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-white'
+          }`}
+        >
+          <Users className="h-4 w-4" />
+          <span>Famílias & Responsáveis ({guardiansGrouped.length})</span>
+        </button>
+      </div>
+
       {/* Filter and Search Bar */}
       <div className="flex flex-col sm:flex-row items-center gap-3">
         <div className="relative flex-1 w-full">
@@ -163,152 +280,274 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Buscar por nome do aluno, matrícula ou CPF..."
+            placeholder={
+              viewMode === 'students'
+                ? 'Buscar aluno por nome, matrícula ou CPF...'
+                : 'Buscar responsável por nome, CPF ou nome do dependente...'
+            }
             className="w-full rounded-lg border border-slate-800 bg-slate-900 pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
           />
         </div>
 
-        <div className="flex items-center gap-1 p-1 bg-slate-900 border border-slate-800 rounded-lg text-xs">
-          <button
-            onClick={() => setStatusFilter('all')}
-            className={`px-3 py-1.5 rounded-md font-medium transition-colors cursor-pointer ${
-              statusFilter === 'all' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Todos ({students.length})
-          </button>
-          <button
-            onClick={() => setStatusFilter('active')}
-            className={`px-3 py-1.5 rounded-md font-medium transition-colors cursor-pointer ${
-              statusFilter === 'active' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Ativos ({students.filter(s => s.status === 'active').length})
-          </button>
-          <button
-            onClick={() => setStatusFilter('inactive')}
-            className={`px-3 py-1.5 rounded-md font-medium transition-colors cursor-pointer ${
-              statusFilter === 'inactive' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Inativos ({students.filter(s => s.status !== 'active').length})
-          </button>
-        </div>
+        {viewMode === 'students' && (
+          <div className="flex items-center gap-1 p-1 bg-slate-900 border border-slate-800 rounded-lg text-xs">
+            <button
+              onClick={() => setStatusFilter('all')}
+              className={`px-3 py-1.5 rounded-md font-medium transition-colors cursor-pointer ${
+                statusFilter === 'all' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Todos ({students.length})
+            </button>
+            <button
+              onClick={() => setStatusFilter('active')}
+              className={`px-3 py-1.5 rounded-md font-medium transition-colors cursor-pointer ${
+                statusFilter === 'active' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Ativos ({students.filter((s) => s.status === 'active').length})
+            </button>
+            <button
+              onClick={() => setStatusFilter('inactive')}
+              className={`px-3 py-1.5 rounded-md font-medium transition-colors cursor-pointer ${
+                statusFilter === 'inactive' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Inativos ({students.filter((s) => s.status !== 'active').length})
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Students Data Grid */}
-      <div className="rounded-xl border border-slate-800 bg-slate-900/60 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="border-b border-slate-800 bg-slate-950/60 text-slate-400 font-semibold uppercase tracking-wider text-[10px]">
-              <tr>
-                <th className="py-3 px-4">Aluno / Matrícula</th>
-                <th className="py-3 px-4">Idade</th>
-                <th className="py-3 px-4">Graduação Atual</th>
-                <th className="py-3 px-4">Responsável Legal</th>
-                <th className="py-3 px-4">Mensalidade</th>
-                <th className="py-3 px-4">Situação</th>
-                <th className="py-3 px-4 text-right">Ações</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60">
-              {filteredStudents.length === 0 ? (
+      {/* MODO 1: TABELA DE ALUNOS */}
+      {viewMode === 'students' && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/60 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="border-b border-slate-800 bg-slate-950/60 text-slate-400 font-semibold uppercase tracking-wider text-[10px]">
                 <tr>
-                  <td colSpan={7} className="py-8 text-center text-slate-500">
-                    Nenhum aluno encontrado com os filtros informados.
-                  </td>
+                  <th className="py-3 px-4">Aluno / Matrícula</th>
+                  <th className="py-3 px-4">Idade</th>
+                  <th className="py-3 px-4">Graduação Atual</th>
+                  <th className="py-3 px-4">Responsável Legal</th>
+                  <th className="py-3 px-4">Mensalidade</th>
+                  <th className="py-3 px-4">Situação</th>
+                  <th className="py-3 px-4 text-right">Ações</th>
                 </tr>
-              ) : (
-                filteredStudents.map((s) => {
-                  const person = getStudentPerson(s);
-                  if (!person) return null;
-                  const age = calculateAge(person.birthDate);
-                  const guardianRels = getStudentGuardians(s.id);
-                  const legalGuardian = guardianRels.find(g => g.relationship.isLegalGuardian);
-                  const currentBelt = s.currentGraduations?.[0];
+              </thead>
+              <tbody className="divide-y divide-slate-800/60">
+                {filteredStudents.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-8 text-center text-slate-500">
+                      Nenhum aluno encontrado com os filtros informados.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredStudents.map((s) => {
+                    const person = getStudentPerson(s);
+                    if (!person) return null;
+                    const age = calculateAge(person.birthDate);
+                    const guardianRels = getStudentGuardians(s.id);
+                    const legalGuardian = guardianRels.find((g) => g.relationship.isLegalGuardian);
+                    const currentBelt = s.currentGraduations?.[0];
 
-                  return (
-                    <tr key={s.id} className="hover:bg-slate-800/40 transition-colors">
-                      <td className="py-3 px-4">
-                        <div className="font-semibold text-white">{person.fullName}</div>
-                        <div className="text-[11px] text-slate-400 font-mono">Matrícula: {s.registrationNumber}</div>
-                      </td>
-
-                      <td className="py-3 px-4 font-mono tabular-nums text-slate-300">
-                        {age} anos
-                        <span className="block text-[10px] text-slate-500">{formatDateBR(person.birthDate)}</span>
-                      </td>
-
-                      <td className="py-3 px-4">
-                        {currentBelt ? (
-                          <div className="flex items-center gap-2">
-                            <span
-                              className="h-3 w-3 rounded-full border border-slate-600 shrink-0"
-                              style={{ backgroundColor: currentBelt.beltColorHex }}
-                            ></span>
-                            <span className="font-medium text-slate-200">{currentBelt.beltName}</span>
+                    return (
+                      <tr key={s.id} className="hover:bg-slate-800/40 transition-colors">
+                        <td className="py-3 px-4">
+                          <div className="font-semibold text-white">{person.fullName}</div>
+                          <div className="text-[11px] text-slate-400 font-mono">
+                            Matrícula: {s.registrationNumber} {person.cpf ? `· CPF: ${formatCPF(person.cpf)}` : ''}
                           </div>
-                        ) : (
-                          <span className="text-slate-500">Sem graduação</span>
-                        )}
-                        <span className="text-[10px] text-slate-400 block">{currentBelt?.martialArtName || 'Judô'}</span>
-                      </td>
+                        </td>
 
-                      <td className="py-3 px-4">
-                        {legalGuardian && legalGuardian.person ? (
-                          <div>
-                            <span className="text-slate-200">{legalGuardian.person.fullName}</span>
-                            <span className="text-[10px] text-slate-500 block">
-                              {legalGuardian.relationship.relationshipLabel} · {formatPhoneBR(legalGuardian.person.phone)}
-                            </span>
+                        <td className="py-3 px-4 font-mono tabular-nums text-slate-300">
+                          {age} anos
+                          <span className="block text-[10px] text-slate-500">{formatDateBR(person.birthDate)}</span>
+                        </td>
+
+                        <td className="py-3 px-4">
+                          {currentBelt ? (
+                            <div className="flex items-center gap-2">
+                              <span
+                                className="h-3 w-3 rounded-full border border-slate-600 shrink-0"
+                                style={{ backgroundColor: currentBelt.beltColorHex }}
+                              ></span>
+                              <span className="font-medium text-slate-200">{currentBelt.beltName}</span>
+                            </div>
+                          ) : (
+                            <span className="text-slate-500 italic">Sem faixa</span>
+                          )}
+                          {currentBelt && (
+                            <span className="text-[10px] text-slate-400 block">{currentBelt.martialArtName}</span>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-4">
+                          {legalGuardian && legalGuardian.person ? (
+                            <div>
+                              <div className="font-medium text-slate-300 flex items-center gap-1.5">
+                                <span>{legalGuardian.person.fullName}</span>
+                                {legalGuardian.isAlsoStudent && (
+                                  <span className="text-[9px] bg-blue-950/80 border border-blue-500/40 text-blue-300 px-1 py-0.2 rounded font-semibold">
+                                    Aluno
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-[10px] text-slate-400">
+                                {legalGuardian.relationship.relationshipLabel} · {formatPhoneBR(legalGuardian.person.phone)}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-slate-500 italic">Próprio aluno (Maior)</span>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-4 font-mono font-medium text-emerald-400">
+                          {formatCurrencyBRL(s.monthlyFee || 0)}
+                        </td>
+
+                        <td className="py-3 px-4">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold border ${
+                              s.status === 'active'
+                                ? 'bg-emerald-950/60 text-emerald-400 border-emerald-500/30'
+                                : s.status === 'suspended'
+                                ? 'bg-amber-950/60 text-amber-400 border-amber-500/30'
+                                : 'bg-red-950/60 text-red-400 border-red-500/30'
+                            }`}
+                          >
+                            {s.status === 'active'
+                              ? 'Ativo'
+                              : s.status === 'suspended'
+                              ? 'Trancado'
+                              : s.status === 'inactive'
+                              ? 'Inativo'
+                              : 'Cancelado'}
+                          </span>
+                        </td>
+
+                        <td className="py-3 px-4 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              onClick={() => setSelectedStudent(s)}
+                              className="p-1.5 rounded-lg border border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors cursor-pointer"
+                              title="Ver prontuário completo do aluno"
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              onClick={() => onEditStudent(s)}
+                              className="p-1.5 rounded-lg border border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors cursor-pointer"
+                              title="Editar dados e responsáveis do aluno"
+                            >
+                              <Edit className="h-3.5 w-3.5" />
+                            </button>
                           </div>
-                        ) : (
-                          <span className="text-slate-400">Próprio Aluno (Maior de idade)</span>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* MODO 2: VISUALIZAÇÃO DE FAMÍLIAS & RESPONSÁVEIS */}
+      {viewMode === 'guardians' && (
+        <div className="space-y-4">
+          <div className="p-3.5 rounded-xl border border-slate-800 bg-slate-900/40 text-xs text-slate-300 flex items-center justify-between">
+            <div>
+              <span className="font-bold text-white">Central de Responsáveis e Vínculos Familiares</span>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Uma mesma pessoa pode ser responsável por múltiplos alunos (irmãos/dependentes) e também ser aluna matriculada no Dojo, sem duplicação de CPF.
+              </p>
+            </div>
+            <div className="text-right">
+              <span className="font-mono text-sm font-bold text-red-400">{guardiansGrouped.length}</span>
+              <span className="text-[11px] text-slate-400 block">responsáveis cadastrados</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {filteredGuardians.length === 0 ? (
+              <div className="col-span-2 p-8 text-center text-slate-500 rounded-xl border border-slate-800 bg-slate-900/40">
+                Nenhum responsável encontrado com o termo pesquisado.
+              </div>
+            ) : (
+              filteredGuardians.map((item) => (
+                <div
+                  key={item.person.id}
+                  className="p-4 rounded-xl border border-slate-800 bg-slate-900/60 hover:border-slate-700 transition-all space-y-3"
+                >
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-white text-sm">{item.person.fullName}</span>
+                        {item.isStudent && (
+                          <span className="px-2 py-0.5 rounded text-[10px] bg-blue-950/80 border border-blue-500/40 text-blue-300 font-semibold flex items-center gap-1">
+                            <GraduationCap className="h-3 w-3" />
+                            Também é Aluno
+                          </span>
                         )}
-                      </td>
+                      </div>
+                      <div className="flex flex-wrap gap-2 text-xs text-slate-400 mt-1 font-mono">
+                        <span>CPF: {formatCPF(item.person.cpf) || 'Não informado'}</span>
+                        <span>·</span>
+                        <span>{formatPhoneBR(item.person.phone)}</span>
+                      </div>
+                      {item.person.email && (
+                        <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1">
+                          <Mail className="h-3 w-3 text-slate-500" />
+                          <span>{item.person.email}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
 
-                      <td className="py-3 px-4 font-mono tabular-nums font-semibold text-slate-200">
-                        {formatCurrencyBRL(s.monthlyFee)}
-                      </td>
-
-                      <td className="py-3 px-4">
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold ${
-                            s.status === 'active'
-                              ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-500/30'
-                              : 'bg-red-950/60 text-red-400 border border-red-500/30'
-                          }`}
+                  {/* Dependentes vinculados a esta pessoa */}
+                  <div className="pt-2 border-t border-slate-800/80 space-y-2">
+                    <span className="text-[11px] font-semibold text-slate-300 block uppercase tracking-wider">
+                      Alunos Dependentes ({item.dependents.length}):
+                    </span>
+                    <div className="space-y-1.5">
+                      {item.dependents.map((dep) => (
+                        <div
+                          key={dep.relationship.id}
+                          className="flex items-center justify-between p-2 rounded-lg bg-slate-950/60 border border-slate-800 text-xs"
                         >
-                          {s.status === 'active' ? 'Ativo' : 'Inativo'}
-                        </span>
-                      </td>
+                          <div>
+                            <div className="font-semibold text-white flex items-center gap-2">
+                              <span>{dep.studentPerson.fullName}</span>
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                                {dep.relationship.relationshipLabel}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                              Matrícula: {dep.student.registrationNumber}
+                              {dep.relationship.isFinancialGuardian && ' · Resp. Financeiro'}
+                              {dep.relationship.isLegalGuardian && ' · Resp. Legal'}
+                            </div>
+                          </div>
 
-                      <td className="py-3 px-4 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
                           <button
-                            onClick={() => setSelectedStudent(s)}
-                            className="p-1.5 rounded-lg border border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors cursor-pointer"
-                            title="Ver Prontuário & Ficha Completa"
+                            onClick={() => setSelectedStudent(dep.student)}
+                            className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
+                            title="Ver ficha deste aluno"
                           >
                             <Eye className="h-3.5 w-3.5" />
                           </button>
-                          <button
-                            onClick={() => onEditStudent(s)}
-                            className="p-1.5 rounded-lg border border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors cursor-pointer"
-                            title="Editar Cadastro"
-                          >
-                            <Edit className="h-3.5 w-3.5" />
-                          </button>
                         </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Complete Student Profile Modal / Drawer */}
       {selectedStudent && activePerson && (
@@ -341,6 +580,17 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                   <span>Ingresso: {formatDateBR(selectedStudent.enrollmentDate)}</span>
                 </div>
               </div>
+              <button
+                onClick={() => {
+                  const s = selectedStudent;
+                  setSelectedStudent(null);
+                  onEditStudent(s);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 text-slate-200 hover:text-white hover:bg-slate-700 transition-colors text-xs font-semibold cursor-pointer"
+              >
+                <Edit className="h-3.5 w-3.5" />
+                <span>Editar Aluno</span>
+              </button>
             </div>
 
             {/* Profile Tabs */}
@@ -359,7 +609,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                   profileTab === 'guardians' ? 'border-red-500 text-white' : 'border-transparent text-slate-400 hover:text-slate-200'
                 }`}
               >
-                Responsáveis ({activeGuardians.length})
+                Responsáveis & Família ({activeGuardians.length})
               </button>
               <button
                 onClick={() => setProfileTab('anthropometry')}
@@ -433,10 +683,16 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                     </div>
                   ) : (
                     activeGuardians.map((g, idx) => (
-                      <div key={idx} className="p-3.5 rounded-lg border border-slate-800 bg-slate-950/60 space-y-2">
+                      <div key={idx} className="p-3.5 rounded-lg border border-slate-800 bg-slate-950/60 space-y-3">
                         <div className="flex items-center justify-between">
-                          <div className="font-bold text-white text-sm">
-                            {g.person?.fullName || 'Responsável'} ({g.relationship.relationshipLabel})
+                          <div className="font-bold text-white text-sm flex items-center gap-2">
+                            <span>{g.person?.fullName || 'Responsável'}</span>
+                            <span className="text-slate-400 font-normal">({g.relationship.relationshipLabel})</span>
+                            {g.isAlsoStudent && (
+                              <span className="px-2 py-0.5 rounded text-[10px] bg-blue-950/80 border border-blue-500/40 text-blue-300 font-semibold">
+                                🥋 Também é Aluno do Dojo
+                              </span>
+                            )}
                           </div>
                           <div className="flex gap-2">
                             {g.relationship.isLegalGuardian && (
@@ -452,12 +708,37 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                           </div>
                         </div>
 
-                        <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-400">
+                        <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-400 font-mono">
+                          <div>CPF: <span className="text-slate-200">{formatCPF(g.person?.cpf) || '-'}</span></div>
                           <div>Telefone: <span className="text-slate-200">{g.person ? formatPhoneBR(g.person.phone) : '-'}</span></div>
-                          <div>E-mail: <span className="text-slate-200">{g.person?.email || '-'}</span></div>
-                          <div>Contato de Emergência: <span className={g.relationship.isEmergencyContact ? 'text-emerald-400 font-semibold' : 'text-slate-500'}>{g.relationship.isEmergencyContact ? 'Sim' : 'Não'}</span></div>
+                          <div>E-mail: <span className="text-slate-200 font-sans">{g.person?.email || '-'}</span></div>
                           <div>Autorizado p/ Retirada: <span className={g.relationship.isPickupAuthorized ? 'text-emerald-400 font-semibold' : 'text-slate-500'}>{g.relationship.isPickupAuthorized ? 'Sim' : 'Não'}</span></div>
                         </div>
+
+                        {/* Outros dependentes vinculados a esse responsável no Dojo */}
+                        {g.otherDependents && g.otherDependents.length > 0 && (
+                          <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-[11px]">
+                            <span className="text-slate-300 font-semibold block mb-1">
+                              Outros alunos vinculados a este responsável (Família no Dojo):
+                            </span>
+                            <div className="flex flex-wrap gap-2">
+                              {g.otherDependents.map((other, oIdx) => (
+                                <button
+                                  key={oIdx}
+                                  onClick={() => {
+                                    if (other.student) {
+                                      setSelectedStudent(other.student);
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 transition-colors cursor-pointer"
+                                >
+                                  <User className="h-3 w-3 text-red-400" />
+                                  <span>{other.person?.fullName} ({other.relationshipLabel})</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
 
                         {g.relationship.notes && (
                           <div className="text-[11px] text-slate-400 bg-slate-900 p-2 rounded border border-slate-800">
@@ -518,13 +799,13 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800">
-                          {activeAssessments.map(a => (
+                          {activeAssessments.map((a) => (
                             <tr key={a.id}>
                               <td className="py-2 px-3 font-mono">{formatDateBR(a.date)}</td>
                               <td className="py-2 px-3 font-mono">{a.weightKg} kg</td>
                               <td className="py-2 px-3 font-mono">{a.heightCm} cm</td>
-                              <td className="py-2 px-3 font-mono">{a.bmi}</td>
-                              <td className="py-2 px-3 text-slate-300">{a.evaluatorName}</td>
+                              <td className="py-2 px-3 font-mono text-emerald-400">{a.bmi}</td>
+                              <td className="py-2 px-3 text-slate-400">{a.evaluatorName}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -537,133 +818,131 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               {/* TAB 4: SAÚDE & ATESTADOS (LGPD) */}
               {profileTab === 'health' && (
                 <div className="space-y-4">
-                  <div className="p-3 rounded-lg bg-red-950/30 border border-red-500/30 flex items-start gap-2.5">
-                    <ShieldCheck className="h-4 w-4 text-red-400 shrink-0 mt-0.5" />
-                    <div className="text-[11px] text-red-200">
-                      <strong>Área de Acesso Restrito (LGPD):</strong> Registros de saúde são de visualização restrita para instrutores autorizados e equipe médica. Todas as consultas geram registro de auditoria.
+                  <div className="p-3.5 rounded-xl border border-red-500/20 bg-red-950/20 flex items-start gap-3">
+                    <ShieldCheck className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-bold text-white text-xs">Proteção LGPD de Dados Sensíveis de Saúde</div>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Registros médicos, restrições e atestados são classificados como dados sensíveis e acessíveis apenas a administradores e instrutores autorizados.
+                      </p>
                     </div>
                   </div>
 
                   {activeHealth ? (
-                    <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="p-3 rounded-lg border border-slate-800 bg-slate-950/60 space-y-2">
-                        <div className="font-semibold text-slate-200">Condições Clínicas & Alergias</div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {(activeHealth.conditions || []).length > 0 ? (
-                            activeHealth.conditions.map((c, i) => (
-                              <span key={i} className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 text-[11px]">
-                                {c}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="text-slate-500">Nenhuma condição informada.</span>
-                          )}
-                        </div>
-                        <div className="text-[11px] text-slate-400 pt-1">
-                          Alergias conhecidas: {(activeHealth.allergies || []).join(', ') || 'Nenhuma informada.'}
-                        </div>
-                      </div>
-
-                      <div className="p-3 rounded-lg border border-slate-800 bg-slate-950/60 space-y-1.5">
-                        <div className="font-semibold text-slate-200">Histórico de Lesões & Medicamentos</div>
-                        <div className="text-slate-400 text-[11px]">Lesões prévias: {activeHealth.injuryHistory || 'Nenhuma registrada.'}</div>
-                        <div className="text-slate-400 text-[11px]">Medicamentos voluntários: {activeHealth.voluntaryMedications || 'Nenhum.'}</div>
+                        <div className="font-semibold text-slate-200">Condições Clínicas & Restrições</div>
+                        <div className="text-slate-400">Condições: <span className="text-white font-medium">{activeHealth.conditions?.join(', ') || 'Nenhuma informada'}</span></div>
+                        <div className="text-slate-400">Alergias: <span className="text-white">{activeHealth.allergies?.join(', ') || 'Nenhuma informada'}</span></div>
+                        <div className="text-slate-400">Restrições Físicas: <span className="text-white">{activeHealth.physicalRestrictions?.join(', ') || 'Nenhuma'}</span></div>
+                        <div className="text-slate-400">Medicamentos: <span className="text-white">{activeHealth.voluntaryMedications || 'Nenhum'}</span></div>
                       </div>
 
                       <div className="p-3 rounded-lg border border-slate-800 bg-slate-950/60 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="font-semibold text-slate-200">Atestados Médicos Cadastrados</span>
-                          {activeHealth.medicalCertExpiryDate && (
-                            <span className="text-[10px] text-emerald-400 font-semibold bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-500/30">
-                              Válido até {formatDateBR(activeHealth.medicalCertExpiryDate)}
-                            </span>
-                          )}
+                        <div className="font-semibold text-slate-200">Atestado Médico & Liberação</div>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${
+                              activeHealth.medicalCertExpiryDate && new Date(activeHealth.medicalCertExpiryDate) > new Date()
+                                ? 'bg-emerald-950/60 text-emerald-400 border-emerald-500/30'
+                                : 'bg-red-950/60 text-red-400 border-red-500/30'
+                            }`}
+                          >
+                            {activeHealth.medicalCertExpiryDate && new Date(activeHealth.medicalCertExpiryDate) > new Date()
+                              ? 'Apto para Treinos e Competições'
+                              : 'Atestado Pendente ou Vencido'}
+                          </span>
                         </div>
-                        {(activeHealth.medicalDocs || []).map((doc) => (
-                          <div key={doc.id} className="flex items-center justify-between p-2 rounded bg-slate-900 border border-slate-800">
-                            <div className="flex items-center gap-2">
-                              <FileCheck className="h-4 w-4 text-emerald-400" />
-                              <span className="text-slate-200 font-medium">{doc.title}</span>
-                            </div>
-                            <span className="text-[10px] text-slate-400">Enviado em {formatDateBR(doc.uploadDate)}</span>
+                        <div className="text-slate-400 text-[11px]">
+                          Vencimento do Atestado: <span className="text-white font-mono">{formatDateBR(activeHealth.medicalCertExpiryDate)}</span>
+                        </div>
+                        {activeHealth.emergencyContactNotes && (
+                          <div className="text-amber-400 text-[11px] bg-amber-950/20 p-2 rounded border border-amber-500/30">
+                            Emergência: {activeHealth.emergencyContactNotes}
                           </div>
-                        ))}
+                        )}
                       </div>
                     </div>
                   ) : (
-                    <div className="p-4 text-center text-slate-500">Nenhum prontuário de saúde preenchido.</div>
+                    <div className="p-4 text-center text-slate-500">Nenhum prontuário de saúde preenchido para este aluno.</div>
                   )}
                 </div>
               )}
 
-              {/* TAB 5: GRADUAÇÕES */}
+              {/* TAB 5: GRADUAÇÕES & FAIXAS */}
               {profileTab === 'ranks' && (
-                <div className="space-y-3">
-                  <div className="font-semibold text-slate-200">Faixas Atuais do Praticante</div>
-                  {(selectedStudent.currentGraduations || []).map((g, i) => (
-                    <div key={i} className="flex items-center justify-between p-3 rounded-lg border border-slate-800 bg-slate-950/60">
-                      <div className="flex items-center gap-3">
-                        <span
-                          className="h-4 w-4 rounded-full border border-slate-500"
-                          style={{ backgroundColor: g.beltColorHex }}
-                        ></span>
-                        <div>
-                          <div className="font-bold text-white">{g.beltName}</div>
-                          <div className="text-[11px] text-slate-400">{g.martialArtName}</div>
-                        </div>
-                      </div>
-                      <div className="text-right text-[11px] text-slate-400">
-                        <div>Graduado em: {formatDateBR(g.graduatedAt)}</div>
-                      </div>
+                <div className="space-y-4">
+                  <div className="border border-slate-800 rounded-lg overflow-hidden">
+                    <div className="bg-slate-950 px-3 py-2 font-semibold text-slate-300 text-[11px] flex items-center justify-between">
+                      <span>Graduações Registradas</span>
+                      <span className="text-[10px] text-slate-400">Total: {selectedStudent.currentGraduations?.length || 0}</span>
                     </div>
-                  ))}
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-900 text-slate-400 text-[10px] uppercase">
+                        <tr>
+                          <th className="py-2 px-3">Modalidade</th>
+                          <th className="py-2 px-3">Faixa / Grau</th>
+                          <th className="py-2 px-3">Data da Graduação</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800">
+                        {(!selectedStudent.currentGraduations || selectedStudent.currentGraduations.length === 0) ? (
+                          <tr>
+                            <td colSpan={3} className="py-4 text-center text-slate-500">
+                              Nenhuma graduação registrada.
+                            </td>
+                          </tr>
+                        ) : (
+                          selectedStudent.currentGraduations.map((g, idx) => (
+                            <tr key={idx}>
+                              <td className="py-2 px-3 font-semibold text-white">{g.martialArtName}</td>
+                              <td className="py-2 px-3">
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    className="h-3 w-3 rounded-full border border-slate-600 shrink-0"
+                                    style={{ backgroundColor: g.beltColorHex }}
+                                  />
+                                  <span className="font-medium text-slate-200">{g.beltName}</span>
+                                </div>
+                              </td>
+                              <td className="py-2 px-3 font-mono text-slate-400">{formatDateBR(g.graduatedAt)}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
 
               {/* TAB 6: TURMAS */}
               {profileTab === 'classes' && (
                 <div className="space-y-3">
-                  <div className="font-semibold text-slate-200">Turmas e Horários Matriculados</div>
                   {activeClasses.length === 0 ? (
-                    <div className="p-4 text-center text-slate-500">Nenhuma turma vinculada a este aluno.</div>
+                    <div className="p-4 text-center text-slate-500 rounded-lg border border-slate-800">
+                      O aluno não está enturmado em nenhuma classe ativa.
+                    </div>
                   ) : (
-                    activeClasses.map((c) => (
-                      <div key={c.id} className="p-3 rounded-lg border border-slate-800 bg-slate-950/60 flex items-center justify-between">
-                        <div>
-                          <div className="font-bold text-white">{c.name}</div>
-                          <div className="text-[11px] text-slate-400">
-                            {c.startTime} às {c.endTime} · {c.tatamiRoom} · Prof. {c.headInstructorName}
+                    activeClasses.map((c) => {
+                      const dayLabels: Record<number, string> = { 0: 'Dom', 1: 'Seg', 2: 'Ter', 3: 'Qua', 4: 'Qui', 5: 'Sex', 6: 'Sáb' };
+                      const daysText = c.daysOfWeek?.map((d) => dayLabels[d] || String(d)).join(', ');
+                      return (
+                        <div key={c.id} className="p-3 rounded-lg border border-slate-800 bg-slate-950/60 flex items-center justify-between">
+                          <div>
+                            <div className="font-bold text-white text-xs">{c.name}</div>
+                            <div className="text-[11px] text-slate-400 mt-0.5">
+                              Instrutor Responsável: {c.headInstructorName}
+                            </div>
+                          </div>
+                          <div className="text-right text-[11px] text-slate-400 font-mono">
+                            {daysText ? `${daysText} · ` : ''}{c.startTime} - {c.endTime}
                           </div>
                         </div>
-                        <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-500/30">
-                          Matrícula Regular
-                        </span>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               )}
-            </div>
-
-            <div className="mt-6 pt-4 border-t border-slate-800 flex items-center justify-between">
-              <button
-                onClick={() => {
-                  const toEdit = selectedStudent;
-                  setSelectedStudent(null);
-                  onEditStudent(toEdit);
-                }}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-xs font-semibold text-white transition-colors cursor-pointer shadow"
-              >
-                <Edit className="h-3.5 w-3.5" />
-                <span>Editar Cadastro</span>
-              </button>
-
-              <button
-                onClick={() => setSelectedStudent(null)}
-                className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-white transition-colors cursor-pointer"
-              >
-                Fechar Ficha
-              </button>
             </div>
           </div>
         </div>

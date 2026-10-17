@@ -1,5 +1,21 @@
 import React, { useState, useEffect } from 'react';
-import { X, UserPlus, Check, AlertCircle, Loader2, Edit, Award } from 'lucide-react';
+import {
+  X,
+  UserPlus,
+  Check,
+  AlertCircle,
+  Loader2,
+  Edit,
+  Award,
+  Users,
+  Search,
+  CheckCircle2,
+  AlertTriangle,
+  UserCheck,
+  ShieldCheck,
+  Link,
+  Sparkles,
+} from 'lucide-react';
 import {
   Student,
   Person,
@@ -9,10 +25,16 @@ import {
 } from '../../types';
 import { calculateAge } from '../../utils/formatters';
 import {
+  cleanCPF,
+  validateCPF,
+  formatCPF,
+} from '../../utils/cpfValidator';
+import {
   studentService,
   isValidUUID,
   CreateStudentPayload,
   UpdateStudentPayload,
+  GuardianSummaryItem,
 } from '../../services/studentService';
 
 interface StudentFormModalProps {
@@ -104,18 +126,85 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
   const [monthlyFee, setMonthlyFee] = useState('220');
   const [studentStatus, setStudentStatus] = useState<'active' | 'inactive' | 'suspended' | 'dropped'>('active');
 
-  // Guardian Data (if minor)
+  // Validação em tempo real do CPF do Aluno
+  const [studentCpfStatus, setStudentCpfStatus] = useState<{
+    isValid: boolean;
+    error?: string;
+    isDuplicate?: boolean;
+    duplicateMsg?: string;
+    existingPerson?: Person;
+    isStudent?: boolean;
+    isGuardian?: boolean;
+  } | null>(null);
+  const [isCheckingStudentCpf, setIsCheckingStudentCpf] = useState(false);
+
+  // Guardian Data (if minor or linked)
   const [hasGuardian, setHasGuardian] = useState(true);
+  const [guardianMode, setGuardianMode] = useState<'select_existing' | 'create_new'>('select_existing');
+  const [availableGuardians, setAvailableGuardians] = useState<GuardianSummaryItem[]>([]);
+  const [isLoadingGuardians, setIsLoadingGuardians] = useState(false);
+  const [guardianSearch, setGuardianSearch] = useState('');
+  const [selectedExistingGuardian, setSelectedExistingGuardian] = useState<GuardianSummaryItem | null>(null);
+
   const [guardianName, setGuardianName] = useState('');
   const [guardianCpf, setGuardianCpf] = useState('');
   const [guardianPhone, setGuardianPhone] = useState('');
   const [guardianEmail, setGuardianEmail] = useState('');
   const [relationshipType, setRelationshipType] = useState('Pai');
 
+  // Validação em tempo real do CPF do Responsável
+  const [guardianCpfStatus, setGuardianCpfStatus] = useState<{
+    isValid: boolean;
+    error?: string;
+    isDuplicate?: boolean;
+    duplicateMsg?: string;
+    existingPerson?: Person;
+    isStudent?: boolean;
+    dependentsCount?: number;
+  } | null>(null);
+  const [isCheckingGuardianCpf, setIsCheckingGuardianCpf] = useState(false);
+
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // 1. Carregar Modalidades Reais do Supabase vinculadas à academia ativa (tenant_id)
+  // 1. Carregar Responsáveis Existentes no Tenant para Autocomplete / Reutilização
+  useEffect(() => {
+    let isMounted = true;
+    if (!isOpen) return;
+
+    async function loadGuardians() {
+      setIsLoadingGuardians(true);
+      try {
+        const list = await studentService.fetchGuardiansSummary(tenantId);
+        if (isMounted) {
+          setAvailableGuardians(list);
+
+          // Se estiver editando e já tiver responsável vinculado, marcar como selecionado
+          if (guardianPersonToEdit) {
+            const found = list.find((g) => g.person.id === guardianPersonToEdit.id);
+            if (found) {
+              setSelectedExistingGuardian(found);
+              setGuardianMode('select_existing');
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Erro ao carregar lista de responsáveis existentes:', err);
+      } finally {
+        if (isMounted) {
+          setIsLoadingGuardians(false);
+        }
+      }
+    }
+
+    loadGuardians();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen, tenantId, guardianPersonToEdit]);
+
+  // 2. Carregar Modalidades Reais do Supabase vinculadas à academia ativa (tenant_id)
   useEffect(() => {
     let isMounted = true;
 
@@ -188,7 +277,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
     };
   }, [isOpen, tenantId, studentToEdit]);
 
-  // 2. Carregar Faixas/Graduações Reais do Supabase correspondentes à modalidade selecionada
+  // 3. Carregar Faixas/Graduações Reais do Supabase correspondentes à modalidade selecionada
   useEffect(() => {
     let isMounted = true;
 
@@ -242,8 +331,8 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
         }
       } catch (err: any) {
         if (!isMounted) return;
-        console.error('Falha ao consultar graduações no Supabase:', err);
-        setBeltsError(err.message || 'Erro ao carregar faixas desta modalidade.');
+        console.error('Falha ao carregar faixas da modalidade:', err);
+        setBeltsError(err.message || 'Erro ao carregar faixas da modalidade no Supabase.');
         setLoadedBelts([]);
         setSelectedBeltId('');
       } finally {
@@ -260,18 +349,22 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
     };
   }, [isOpen, tenantId, selectedArtId, studentToEdit]);
 
-  // 3. Sincronizar dados pessoais ao abrir para criar ou editar
+  // 4. Sincronizar dados pessoais ao abrir para criar ou editar
   useEffect(() => {
     if (!isOpen) return;
 
     setError('');
     setIsSubmitting(false);
+    setStudentCpfStatus(null);
+    setGuardianCpfStatus(null);
+    setGuardianSearch('');
 
     if (studentToEdit) {
       const p = activePersonToEdit;
       setFullName(p.fullName || '');
       setSocialName(p.socialName || '');
-      setCpf(p.cpf || '');
+      const rawCpf = p.cpf || '';
+      setCpf(rawCpf ? formatCPF(rawCpf) : '');
       setBirthDate(p.birthDate || '2014-05-10');
       setGender(p.gender || 'male');
       setPhone(p.phone || '');
@@ -283,7 +376,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       if (guardianPersonToEdit) {
         setHasGuardian(true);
         setGuardianName(guardianPersonToEdit.fullName || '');
-        setGuardianCpf(guardianPersonToEdit.cpf || '');
+        setGuardianCpf(guardianPersonToEdit.cpf ? formatCPF(guardianPersonToEdit.cpf) : '');
         setGuardianPhone(guardianPersonToEdit.phone || '');
         setGuardianEmail(guardianPersonToEdit.email || '');
         setRelationshipType(guardianRelToEdit?.relationshipLabel || 'Pai');
@@ -295,6 +388,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
         setGuardianPhone('');
         setGuardianEmail('');
         setRelationshipType('Pai');
+        setSelectedExistingGuardian(null);
       }
     } else {
       // Modo Criação
@@ -314,12 +408,168 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       setGuardianPhone('');
       setGuardianEmail('');
       setRelationshipType('Pai');
+      setSelectedExistingGuardian(null);
+      setGuardianMode('select_existing');
     }
   }, [isOpen, studentToEdit, personToEdit, guardianRelToEdit, guardianPersonToEdit]);
 
   if (!isOpen) return null;
 
   const currentAge = calculateAge(birthDate);
+
+  // Manipulador de digitação do CPF do Aluno com formatação e validação matemática
+  const handleStudentCpfChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value;
+    const clean = cleanCPF(raw);
+    if (clean.length > 11) return;
+
+    const formatted = clean.length > 0 ? formatCPF(clean) : '';
+    setCpf(formatted);
+
+    if (clean.length === 0) {
+      setStudentCpfStatus(null);
+      return;
+    }
+
+    if (clean.length < 11) {
+      setStudentCpfStatus({
+        isValid: false,
+        error: `Digite 11 dígitos (${clean.length}/11)`,
+      });
+      return;
+    }
+
+    // 11 dígitos: validação matemática oficial do módulo 11
+    const validation = validateCPF(clean);
+    if (!validation.isValid) {
+      setStudentCpfStatus({
+        isValid: false,
+        error: validation.error,
+      });
+      return;
+    }
+
+    // Validação matemática OK. Checar unicidade por academia (tenant)
+    setIsCheckingStudentCpf(true);
+    const excludeId = isEditing && activePersonToEdit ? activePersonToEdit.id : undefined;
+
+    studentService
+      .checkCpfDuplicity(tenantId, clean, excludeId)
+      .then((dupl) => {
+        setIsCheckingStudentCpf(false);
+        if (dupl.isDuplicate) {
+          setStudentCpfStatus({
+            isValid: !dupl.isStudent, // se for estudante já matriculado, bloqueia
+            isDuplicate: true,
+            duplicateMsg: dupl.message,
+            existingPerson: dupl.existingPerson,
+            isStudent: dupl.isStudent,
+            isGuardian: dupl.isGuardian,
+          });
+        } else {
+          setStudentCpfStatus({
+            isValid: true,
+          });
+        }
+      })
+      .catch(() => {
+        setIsCheckingStudentCpf(false);
+        setStudentCpfStatus({ isValid: true });
+      });
+  };
+
+  // Manipulador de digitação do CPF do Responsável
+  const handleGuardianCpfChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value;
+    const clean = cleanCPF(raw);
+    if (clean.length > 11) return;
+
+    const formatted = clean.length > 0 ? formatCPF(clean) : '';
+    setGuardianCpf(formatted);
+
+    if (clean.length === 0) {
+      setGuardianCpfStatus(null);
+      return;
+    }
+
+    if (clean.length < 11) {
+      setGuardianCpfStatus({
+        isValid: false,
+        error: `Digite 11 dígitos (${clean.length}/11)`,
+      });
+      return;
+    }
+
+    const validation = validateCPF(clean);
+    if (!validation.isValid) {
+      setGuardianCpfStatus({
+        isValid: false,
+        error: validation.error,
+      });
+      return;
+    }
+
+    // Verificar se já existe pessoa com esse CPF na academia
+    setIsCheckingGuardianCpf(true);
+    studentService
+      .findPersonByCpf(tenantId, clean)
+      .then((found) => {
+        setIsCheckingGuardianCpf(false);
+        if (found && found.person) {
+          setGuardianCpfStatus({
+            isValid: true,
+            isDuplicate: true,
+            existingPerson: found.person,
+            isStudent: found.isStudent,
+            dependentsCount: found.dependentsCount,
+            duplicateMsg: `Pessoa já cadastrada no Dojo: ${found.person.fullName}${
+              found.isStudent ? ' (Aluno Matriculado)' : ''
+            }`,
+          });
+        } else {
+          setGuardianCpfStatus({
+            isValid: true,
+          });
+        }
+      })
+      .catch(() => {
+        setIsCheckingGuardianCpf(false);
+        setGuardianCpfStatus({ isValid: true });
+      });
+  };
+
+  // Selecionar responsável existente da academia
+  const handleSelectExistingGuardian = (guardianItem: GuardianSummaryItem) => {
+    setSelectedExistingGuardian(guardianItem);
+    setGuardianName(guardianItem.person.fullName);
+    setGuardianCpf(guardianItem.person.cpf ? formatCPF(guardianItem.person.cpf) : '');
+    setGuardianPhone(guardianItem.person.phone || '');
+    setGuardianEmail(guardianItem.person.email || '');
+    setGuardianCpfStatus({ isValid: true });
+  };
+
+  // Limpar responsável selecionado
+  const handleClearSelectedGuardian = () => {
+    setSelectedExistingGuardian(null);
+    setGuardianName('');
+    setGuardianCpf('');
+    setGuardianPhone('');
+    setGuardianEmail('');
+    setGuardianCpfStatus(null);
+  };
+
+  // Responsáveis filtrados pela busca
+  const filteredGuardians = availableGuardians.filter((g) => {
+    const term = guardianSearch.toLowerCase().trim();
+    if (!term) return true;
+    const cleanTerm = cleanCPF(term);
+    const matchesName = g.person.fullName.toLowerCase().includes(term);
+    const matchesCpf = cleanTerm && cleanCPF(g.person.cpf).includes(cleanTerm);
+    const matchesStudent = g.dependents.some((d) =>
+      d.studentPerson.fullName.toLowerCase().includes(term)
+    );
+    return matchesName || matchesCpf || matchesStudent;
+  });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -330,9 +580,41 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       return;
     }
 
-    if (hasGuardian && !guardianName.trim()) {
-      setError('Por favor, informe o nome do responsável ou desmarque a opção de vincular responsável.');
-      return;
+    // Validação matemática do CPF do Aluno (se informado)
+    const cleanStudentCpf = cleanCPF(cpf);
+    if (cleanStudentCpf) {
+      const val = validateCPF(cleanStudentCpf);
+      if (!val.isValid) {
+        setError(`CPF do Aluno inválido: ${val.error}`);
+        return;
+      }
+      if (studentCpfStatus?.isDuplicate && studentCpfStatus?.isStudent) {
+        setError(`CPF duplicado: ${studentCpfStatus.duplicateMsg}`);
+        return;
+      }
+    }
+
+    // Validações do Responsável
+    if (hasGuardian) {
+      if (guardianMode === 'select_existing') {
+        if (!selectedExistingGuardian && !guardianName.trim()) {
+          setError('Selecione um responsável cadastrado na academia ou alterne para a aba "Cadastrar Novo Responsável".');
+          return;
+        }
+      } else {
+        if (!guardianName.trim()) {
+          setError('Por favor, informe o nome completo do responsável.');
+          return;
+        }
+        const cleanGrdCpf = cleanCPF(guardianCpf);
+        if (cleanGrdCpf) {
+          const valG = validateCPF(cleanGrdCpf);
+          if (!valG.isValid) {
+            setError(`CPF do Responsável inválido: ${valG.error}`);
+            return;
+          }
+        }
+      }
     }
 
     setIsSubmitting(true);
@@ -358,6 +640,15 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       return;
     }
 
+    const normalizedStudentCpf = cleanStudentCpf ? formatCPF(cleanStudentCpf) : undefined;
+    const cleanGrdCpf = cleanCPF(guardianCpf);
+    const normalizedGuardianCpf = cleanGrdCpf ? formatCPF(cleanGrdCpf) : undefined;
+
+    // Determinar ID da pessoa do responsável para reaproveitamento
+    const effectiveReusedGuardianPersonId =
+      selectedExistingGuardian?.person.id ||
+      (guardianCpfStatus?.existingPerson ? guardianCpfStatus.existingPerson.id : undefined);
+
     // ==========================================
     // FLUXO DE EDIÇÃO DE ALUNO EXISTENTE
     // ==========================================
@@ -367,7 +658,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
         ...p,
         fullName: fullName.trim(),
         socialName: socialName.trim() || undefined,
-        cpf: cpf || p.cpf,
+        cpf: normalizedStudentCpf || p.cpf || '',
         birthDate,
         gender,
         phone: phone || p.phone,
@@ -398,16 +689,16 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       let updatedRelationship: GuardianRelationship | undefined = undefined;
 
       if (hasGuardian && guardianName.trim()) {
-        const gId = guardianPersonToEdit?.id || `person-g-${Date.now()}`;
+        const gId = effectiveReusedGuardianPersonId || guardianPersonToEdit?.id || `person-g-${Date.now()}`;
         updatedGuardianPerson = {
           id: gId,
           tenantId,
           fullName: guardianName.trim(),
-          cpf: guardianCpf || guardianPersonToEdit?.cpf || '111.222.333-44',
+          cpf: normalizedGuardianCpf || guardianPersonToEdit?.cpf || '',
           birthDate: guardianPersonToEdit?.birthDate || '1985-01-01',
           gender: guardianPersonToEdit?.gender || 'other',
-          phone: guardianPhone || guardianPersonToEdit?.phone || phone || '(11) 98888-7777',
-          email: guardianEmail || guardianPersonToEdit?.email || 'responsavel@tatamehub.com.br',
+          phone: guardianPhone || guardianPersonToEdit?.phone || phone || '',
+          email: guardianEmail || guardianPersonToEdit?.email || '',
           address: updatedPerson.address,
           createdAt: guardianPersonToEdit?.createdAt || new Date().toISOString(),
         };
@@ -436,7 +727,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
         fullName: fullName.trim(),
         socialName: socialName.trim() || undefined,
         birthDate,
-        cpf,
+        cpf: normalizedStudentCpf,
         gender,
         phone,
         email,
@@ -448,10 +739,11 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
         selectedArt: chosenArt,
         selectedBelt: chosenBelt,
         hasGuardian,
-        guardianPersonId: guardianPersonToEdit?.id,
+        guardianPersonId: effectiveReusedGuardianPersonId || guardianPersonToEdit?.id,
+        reusedGuardianPersonId: effectiveReusedGuardianPersonId,
         guardianRelId: guardianRelToEdit?.id,
         guardianName: guardianName.trim(),
-        guardianCpf,
+        guardianCpf: normalizedGuardianCpf,
         guardianPhone,
         guardianEmail,
         relationshipType,
@@ -474,7 +766,9 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
     // ==========================================
     // FLUXO DE CRIAÇÃO DE NOVO ALUNO
     // ==========================================
-    const studentPersonId = `person-${Date.now()}`;
+    const studentPersonId = studentCpfStatus?.existingPerson
+      ? studentCpfStatus.existingPerson.id
+      : `person-${Date.now()}`;
     const studentId = `student-${Date.now()}`;
     const now = new Date().toISOString();
 
@@ -483,11 +777,11 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       tenantId,
       fullName: fullName.trim(),
       socialName: socialName.trim() || undefined,
-      cpf: cpf || '000.000.000-00',
+      cpf: normalizedStudentCpf || '',
       birthDate,
       gender,
-      phone: phone || '(11) 90000-0000',
-      email: email || 'aluno@tatamehub.com.br',
+      phone: phone || '',
+      email: email || '',
       address: {
         street: 'Rua das Flores',
         number: '123',
@@ -504,7 +798,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       tenantId,
       branchId,
       personId: studentPersonId,
-      registrationNumber: `KOD-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`,
+      registrationNumber: `MAT-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
       enrollmentDate: new Date().toISOString().split('T')[0],
       status: studentStatus,
       currentGraduations: [
@@ -524,16 +818,16 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
     let relationship: GuardianRelationship | undefined = undefined;
 
     if (hasGuardian && guardianName.trim()) {
-      const guardianId = `person-g-${Date.now()}`;
+      const guardianId = effectiveReusedGuardianPersonId || `person-g-${Date.now()}`;
       guardianPerson = {
         id: guardianId,
         tenantId,
         fullName: guardianName.trim(),
-        cpf: guardianCpf || '111.222.333-44',
+        cpf: normalizedGuardianCpf || '',
         birthDate: '1985-01-01',
         gender: 'male',
-        phone: guardianPhone || phone || '(11) 98888-7777',
-        email: guardianEmail || 'responsavel@tatamehub.com.br',
+        phone: guardianPhone || phone || '',
+        email: guardianEmail || '',
         address: newPerson.address,
         createdAt: now,
       };
@@ -556,7 +850,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       branchId,
       fullName: fullName.trim(),
       socialName: socialName.trim() || undefined,
-      cpf,
+      cpf: normalizedStudentCpf,
       birthDate,
       gender,
       phone,
@@ -568,8 +862,9 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
       selectedArt: chosenArt,
       selectedBelt: chosenBelt,
       hasGuardian,
+      reusedGuardianPersonId: effectiveReusedGuardianPersonId,
       guardianName: guardianName.trim(),
-      guardianCpf,
+      guardianCpf: normalizedGuardianCpf,
       guardianPhone,
       guardianEmail,
       relationshipType,
@@ -604,8 +899,8 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
             </h3>
             <p className="text-xs text-slate-400">
               {isEditing
-                ? `Matrícula: ${studentToEdit?.registrationNumber} · Atualize os dados cadastrais e responsáveis.`
-                : 'Preencha os dados de identificação, graduação inicial e responsáveis.'}
+                ? `Matrícula: ${studentToEdit?.registrationNumber} · Atualize os dados cadastrais, graduação e vínculos familiares.`
+                : 'Preencha os dados de identificação, graduação inicial e responsáveis com validação matemática de CPF.'}
             </p>
           </div>
         </div>
@@ -620,8 +915,13 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
         <form onSubmit={handleSubmit} className="space-y-4 text-xs">
           {/* Seção 1: Dados Pessoais do Aluno */}
           <div className="p-3.5 rounded-xl border border-slate-800 bg-slate-950/60 space-y-3">
-            <div className="font-semibold text-slate-200 text-xs uppercase tracking-wider">
-              1. Identificação do Aluno
+            <div className="flex items-center justify-between">
+              <div className="font-semibold text-slate-200 text-xs uppercase tracking-wider">
+                1. Identificação do Aluno
+              </div>
+              <span className="text-[11px] text-slate-400">
+                Idade calculada: <strong className="text-white">{currentAge} anos</strong> ({currentAge < 18 ? 'Menor' : 'Maior'})
+              </span>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -649,14 +949,49 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
               </div>
 
               <div>
-                <label className="block text-slate-300 font-medium mb-1">CPF do Aluno</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-slate-300 font-medium">CPF do Aluno</label>
+                  {isCheckingStudentCpf && (
+                    <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                      <Loader2 className="h-2.5 w-2.5 animate-spin text-red-400" />
+                      Validando...
+                    </span>
+                  )}
+                </div>
                 <input
                   type="text"
                   value={cpf}
-                  onChange={(e) => setCpf(e.target.value)}
+                  onChange={handleStudentCpfChange}
                   placeholder="000.000.000-00"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
+                  maxLength={14}
+                  className={`w-full rounded-lg border px-3 py-2 text-white font-mono placeholder-slate-500 focus:outline-none ${
+                    studentCpfStatus && !studentCpfStatus.isValid
+                      ? 'border-red-500 bg-red-950/20'
+                      : studentCpfStatus && studentCpfStatus.isValid
+                      ? 'border-emerald-500 bg-emerald-950/20'
+                      : 'border-slate-700 bg-slate-800 focus:border-red-500'
+                  }`}
                 />
+                {studentCpfStatus && (
+                  <div className="mt-1">
+                    {studentCpfStatus.isValid ? (
+                      <span className="text-[10px] text-emerald-400 flex items-center gap-1">
+                        <CheckCircle2 className="h-3 w-3 shrink-0" />
+                        CPF matematicamente válido
+                        {studentCpfStatus.isDuplicate && !studentCpfStatus.isStudent && (
+                          <span className="text-blue-300 ml-1 font-sans">
+                            · Reaproveitará cadastro existente de {studentCpfStatus.existingPerson?.fullName}
+                          </span>
+                        )}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-red-400 flex items-center gap-1">
+                        <AlertTriangle className="h-3 w-3 shrink-0" />
+                        {studentCpfStatus.error || studentCpfStatus.duplicateMsg}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -670,7 +1005,6 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
                   onChange={(e) => setBirthDate(e.target.value)}
                   className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none"
                 />
-                <span className="text-[10px] text-slate-400 mt-1 block">Idade calculada: <strong>{currentAge} anos</strong></span>
               </div>
 
               <div>
@@ -798,18 +1132,16 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
                   value={selectedArtId}
                   onChange={(e) => {
                     setSelectedArtId(e.target.value);
-                    setSelectedBeltId('');
                     setGraduationNotice(null);
                   }}
+                  required
                   disabled={isLoadingArts || loadedArts.length === 0}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none disabled:opacity-50"
                 >
-                  <option value="">
-                    {isLoadingArts ? 'Carregando modalidades...' : 'Selecione a Modalidade...'}
-                  </option>
-                  {loadedArts.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
+                  <option value="">Selecione a Modalidade...</option>
+                  {loadedArts.map((art) => (
+                    <option key={art.id} value={art.id}>
+                      {art.name}
                     </option>
                   ))}
                 </select>
@@ -821,12 +1153,16 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
                 </label>
                 <select
                   value={selectedBeltId}
-                  onChange={(e) => setSelectedBeltId(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedBeltId(e.target.value);
+                    setGraduationNotice(null);
+                  }}
+                  required
                   disabled={isLoadingBelts || !selectedArtId || loadedBelts.length === 0}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none disabled:opacity-50"
                 >
                   {!selectedArtId ? (
-                    <option value="">Selecione primeiro uma modalidade</option>
+                    <option value="">Selecione a modalidade primeiro</option>
                   ) : isLoadingBelts ? (
                     <option value="">Carregando faixas da modalidade...</option>
                   ) : loadedBelts.length === 0 ? (
@@ -870,11 +1206,12 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
             </div>
           </div>
 
-          {/* Seção 3: Responsável Legal & Financeiro (Obrigatório se menor) */}
+          {/* Seção 3: Responsável Legal & Financeiro (Reutilização de Pessoas e Vínculos Familiares) */}
           <div className="p-3.5 rounded-xl border border-slate-800 bg-slate-950/60 space-y-3">
             <div className="flex items-center justify-between">
-              <div className="font-semibold text-slate-200 text-xs uppercase tracking-wider">
-                3. Responsável Legal & Financeiro {currentAge < 18 ? '(Obrigatório para Menores)' : '(Opcional)'}
+              <div className="font-semibold text-slate-200 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                <Users className="h-4 w-4 text-red-400" />
+                <span>3. Responsável Legal & Financeiro {currentAge < 18 ? '(Obrigatório para Menores)' : '(Opcional)'}</span>
               </div>
               <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-300">
                 <input
@@ -889,68 +1226,265 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
 
             {hasGuardian && (
               <div className="space-y-3 pt-2">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-slate-300 font-medium mb-1">Nome do Responsável *</label>
-                    <input
-                      type="text"
-                      value={guardianName}
-                      onChange={(e) => setGuardianName(e.target.value)}
-                      placeholder="Nome do Pai, Mãe ou Tutor legal"
-                      className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
-                    />
-                  </div>
+                {/* Abas de Escolha do Responsável: Reutilizar Existente vs. Novo Cadastro */}
+                <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
+                  <button
+                    type="button"
+                    onClick={() => setGuardianMode('select_existing')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                      guardianMode === 'select_existing'
+                        ? 'bg-red-600 text-white shadow'
+                        : 'bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700'
+                    }`}
+                  >
+                    <UserCheck className="h-3.5 w-3.5" />
+                    <span>Selecionar Responsável Existente ({availableGuardians.length})</span>
+                  </button>
 
-                  <div>
-                    <label className="block text-slate-300 font-medium mb-1">Parentesco / Vínculo</label>
-                    <select
-                      value={relationshipType}
-                      onChange={(e) => setRelationshipType(e.target.value)}
-                      className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none"
-                    >
-                      <option value="Pai">Pai</option>
-                      <option value="Mãe">Mãe</option>
-                      <option value="Tutor Legal">Tutor Legal (Documentado)</option>
-                      <option value="Tio(a)">Tio(a)</option>
-                      <option value="Avô(ó)">Avô(ó)</option>
-                      <option value="Outro">Outro Representante</option>
-                    </select>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGuardianMode('create_new');
+                      setSelectedExistingGuardian(null);
+                    }}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                      guardianMode === 'create_new'
+                        ? 'bg-red-600 text-white shadow'
+                        : 'bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700'
+                    }`}
+                  >
+                    <UserPlus className="h-3.5 w-3.5" />
+                    <span>Cadastrar Novo Responsável</span>
+                  </button>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-slate-300 font-medium mb-1">CPF do Responsável</label>
-                    <input
-                      type="text"
-                      value={guardianCpf}
-                      onChange={(e) => setGuardianCpf(e.target.value)}
-                      placeholder="000.000.000-00"
-                      className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
-                    />
-                  </div>
+                {/* MODO 1: SELECIONAR RESPONSÁVEL EXISTENTE NA ACADEMIA */}
+                {guardianMode === 'select_existing' && (
+                  <div className="space-y-3">
+                    {selectedExistingGuardian ? (
+                      <div className="p-3 rounded-xl border border-emerald-500/40 bg-emerald-950/20 space-y-2">
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-white text-sm">
+                                {selectedExistingGuardian.person.fullName}
+                              </span>
+                              <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-900/60 border border-emerald-500/40 text-emerald-300 font-semibold">
+                                Responsável Selecionado ✓
+                              </span>
+                              {selectedExistingGuardian.isStudent && (
+                                <span className="px-2 py-0.5 rounded text-[10px] bg-blue-900/60 border border-blue-500/40 text-blue-300 font-semibold">
+                                  🥋 Também é Aluno do Dojo
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap gap-3 text-[11px] text-slate-400 mt-1 font-mono">
+                              <span>CPF: {formatCPF(selectedExistingGuardian.person.cpf) || 'Não informado'}</span>
+                              <span>·</span>
+                              <span>Tel: {selectedExistingGuardian.person.phone || 'Sem telefone'}</span>
+                              <span>·</span>
+                              <span>E-mail: {selectedExistingGuardian.person.email || 'Sem e-mail'}</span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleClearSelectedGuardian}
+                            className="px-2 py-1 rounded text-[11px] bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
+                          >
+                            Trocar
+                          </button>
+                        </div>
 
-                  <div>
-                    <label className="block text-slate-300 font-medium mb-1">WhatsApp do Responsável</label>
-                    <input
-                      type="text"
-                      value={guardianPhone}
-                      onChange={(e) => setGuardianPhone(e.target.value)}
-                      placeholder="(11) 98888-7777"
-                      className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
-                    />
-                  </div>
+                        {selectedExistingGuardian.dependents.length > 0 && (
+                          <div className="pt-1 border-t border-slate-800/80 text-[11px] text-slate-300">
+                            <span className="text-slate-400 font-medium">Já vinculado a outros dependentes: </span>
+                            {selectedExistingGuardian.dependents.map((d, idx) => (
+                              <span key={d.relationshipId} className="inline-block mr-2 font-semibold text-slate-200">
+                                {d.studentPerson.fullName} ({d.relationshipLabel}){idx < selectedExistingGuardian.dependents.length - 1 ? ',' : ''}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="relative">
+                          <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                          <input
+                            type="text"
+                            value={guardianSearch}
+                            onChange={(e) => setGuardianSearch(e.target.value)}
+                            placeholder="Buscar responsável já cadastrado por nome, CPF ou nome do filho..."
+                            className="w-full rounded-lg border border-slate-700 bg-slate-800 pl-9 pr-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
+                          />
+                        </div>
 
-                  <div>
-                    <label className="block text-slate-300 font-medium mb-1">E-mail do Responsável</label>
-                    <input
-                      type="email"
-                      value={guardianEmail}
-                      onChange={(e) => setGuardianEmail(e.target.value)}
-                      placeholder="responsavel@email.com"
-                      className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
-                    />
+                        {isLoadingGuardians ? (
+                          <div className="p-4 text-center text-slate-400 flex items-center justify-center gap-2">
+                            <Loader2 className="h-4 w-4 animate-spin text-red-500" />
+                            <span>Carregando responsáveis cadastrados...</span>
+                          </div>
+                        ) : filteredGuardians.length === 0 ? (
+                          <div className="p-4 rounded-lg border border-dashed border-slate-800 text-center text-slate-400 space-y-1">
+                            <p>Nenhum responsável encontrado com esse termo.</p>
+                            <button
+                              type="button"
+                              onClick={() => setGuardianMode('create_new')}
+                              className="text-red-400 hover:underline font-semibold"
+                            >
+                              Clique aqui para cadastrar um novo responsável
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="max-h-48 overflow-y-auto divide-y divide-slate-800 rounded-lg border border-slate-800 bg-slate-900">
+                            {filteredGuardians.map((g) => (
+                              <div
+                                key={g.person.id}
+                                className="p-2.5 flex items-center justify-between hover:bg-slate-800/60 transition-colors"
+                              >
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-semibold text-white">{g.person.fullName}</span>
+                                    {g.isStudent && (
+                                      <span className="px-1.5 py-0.2 rounded text-[9px] bg-blue-950 border border-blue-500/40 text-blue-300 font-semibold">
+                                        Aluno
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400 flex items-center gap-2 mt-0.5">
+                                    <span className="font-mono">{formatCPF(g.person.cpf) || 'Sem CPF'}</span>
+                                    <span>·</span>
+                                    <span>{g.person.phone || 'Sem telefone'}</span>
+                                    {g.dependents.length > 0 && (
+                                      <>
+                                        <span>·</span>
+                                        <span className="text-slate-300">
+                                          {g.dependents.length} dependente(s): {g.dependents.map((d) => d.studentPerson.fullName).join(', ')}
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSelectExistingGuardian(g)}
+                                  className="px-2.5 py-1 rounded-md bg-slate-800 hover:bg-red-600 text-slate-200 hover:text-white text-xs font-semibold border border-slate-700 transition-colors cursor-pointer"
+                                >
+                                  Selecionar
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
+                )}
+
+                {/* MODO 2: CADASTRAR NOVO RESPONSÁVEL */}
+                {guardianMode === 'create_new' && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-slate-300 font-medium mb-1">Nome do Responsável *</label>
+                        <input
+                          type="text"
+                          value={guardianName}
+                          onChange={(e) => setGuardianName(e.target.value)}
+                          placeholder="Nome do Pai, Mãe ou Tutor legal"
+                          className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-slate-300 font-medium">CPF do Responsável</label>
+                          {isCheckingGuardianCpf && (
+                            <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                              <Loader2 className="h-2.5 w-2.5 animate-spin text-red-400" />
+                              Validando...
+                            </span>
+                          )}
+                        </div>
+                        <input
+                          type="text"
+                          value={guardianCpf}
+                          onChange={handleGuardianCpfChange}
+                          placeholder="000.000.000-00"
+                          maxLength={14}
+                          className={`w-full rounded-lg border px-3 py-2 text-white font-mono placeholder-slate-500 focus:outline-none ${
+                            guardianCpfStatus && !guardianCpfStatus.isValid
+                              ? 'border-red-500 bg-red-950/20'
+                              : guardianCpfStatus && guardianCpfStatus.isValid
+                              ? 'border-emerald-500 bg-emerald-950/20'
+                              : 'border-slate-700 bg-slate-800 focus:border-red-500'
+                          }`}
+                        />
+                        {guardianCpfStatus && (
+                          <div className="mt-1">
+                            {guardianCpfStatus.isValid ? (
+                              <span className="text-[10px] text-emerald-400 flex items-center gap-1">
+                                <CheckCircle2 className="h-3 w-3 shrink-0" />
+                                CPF matematicamente válido
+                                {guardianCpfStatus.isDuplicate && (
+                                  <span className="text-blue-300 ml-1 font-sans">
+                                    · {guardianCpfStatus.duplicateMsg}
+                                  </span>
+                                )}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-red-400 flex items-center gap-1">
+                                <AlertTriangle className="h-3 w-3 shrink-0" />
+                                {guardianCpfStatus.error}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-slate-300 font-medium mb-1">WhatsApp do Responsável</label>
+                        <input
+                          type="text"
+                          value={guardianPhone}
+                          onChange={(e) => setGuardianPhone(e.target.value)}
+                          placeholder="(11) 98888-7777"
+                          className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-slate-300 font-medium mb-1">E-mail do Responsável</label>
+                        <input
+                          type="email"
+                          value={guardianEmail}
+                          onChange={(e) => setGuardianEmail(e.target.value)}
+                          placeholder="responsavel@email.com"
+                          className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Tipo de Parentesco / Vínculo (comum aos dois modos) */}
+                <div className="pt-1">
+                  <label className="block text-slate-300 font-medium mb-1">Parentesco / Vínculo com o Aluno</label>
+                  <select
+                    value={relationshipType}
+                    onChange={(e) => setRelationshipType(e.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none"
+                  >
+                    <option value="Pai">Pai</option>
+                    <option value="Mãe">Mãe</option>
+                    <option value="Tutor Legal">Tutor Legal (Documentado)</option>
+                    <option value="Tio(a)">Tio(a)</option>
+                    <option value="Avô(ó)">Avô(ó)</option>
+                    <option value="Irmão/Irmã">Irmão/Irmã (Maior de Idade)</option>
+                    <option value="Outro">Outro Representante</option>
+                  </select>
                 </div>
               </div>
             )}
@@ -967,7 +1501,7 @@ export const StudentFormModal: React.FC<StudentFormModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || (studentCpfStatus !== null && !studentCpfStatus.isValid)}
               className="flex items-center gap-1.5 px-5 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-500 transition-colors shadow cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSubmitting ? (

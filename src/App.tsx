@@ -596,7 +596,15 @@ export default function App() {
             const filtered = prev.filter(
               (g) => g.id !== result.relationship!.id && g.studentId !== result.student.id
             );
-            return [result.relationship!, ...filtered];
+            const nextList = [result.relationship!, ...filtered];
+            DataStore.saveGuardianRelationships(nextList);
+            return nextList;
+          });
+        } else if (payloadDetails?.hasGuardian === false) {
+          setGuardians((prev) => {
+            const nextList = prev.filter((g) => g.studentId !== result.student.id);
+            DataStore.saveGuardianRelationships(nextList);
+            return nextList;
           });
         }
 
@@ -624,6 +632,8 @@ export default function App() {
     }
     const updatedGuardiansList = relationship
       ? [relationship, ...guardians.filter((g) => g.studentId !== updatedStudent.id)]
+      : payloadDetails?.hasGuardian === false
+      ? guardians.filter((g) => g.studentId !== updatedStudent.id)
       : guardians;
 
     DataStore.saveStudents(updatedStudentsList);
@@ -638,14 +648,22 @@ export default function App() {
       currentTenantId,
       currentUser.id,
       currentUser.name,
-      'Atualização de Aluno',
+      'Edição de Aluno',
       'Student',
       updatedStudent.id,
-      `Cadastro do aluno ${updatedPerson.fullName} atualizado localmente.`
+      `Dados do aluno ${updatedPerson.fullName} atualizados com sucesso.`
     );
 
     setIsNewStudentOpen(false);
     setEditingStudent(null);
+  };
+
+  const handleUpdatePerson = (updatedPerson: Person) => {
+    setPersons((prev) => {
+      const next = prev.map((p) => (p.id === updatedPerson.id ? updatedPerson : p));
+      DataStore.savePersons(next);
+      return next;
+    });
   };
 
   // Handlers for Attendance
@@ -1062,8 +1080,10 @@ export default function App() {
               classes={classes}
               enrollments={enrollments}
               isLoading={isLoadingStudents}
+              tenantId={currentTenantId}
               onOpenCreateStudent={handleOpenCreateStudent}
               onEditStudent={handleOpenEditStudent}
+              onUpdatePerson={handleUpdatePerson}
             />
           )}
 

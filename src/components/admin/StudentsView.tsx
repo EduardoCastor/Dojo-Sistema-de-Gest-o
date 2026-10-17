@@ -20,6 +20,8 @@ import {
   Phone,
   Mail,
   GraduationCap,
+  Loader2,
+  CheckCircle2,
 } from 'lucide-react';
 import {
   Student,
@@ -39,6 +41,8 @@ import {
   formatPhoneBR,
   formatCurrencyBRL,
 } from '../../utils/formatters';
+import { validateCPF, cleanCPF } from '../../utils/cpfValidator';
+import { studentService } from '../../services/studentService';
 
 interface StudentsViewProps {
   students: Student[];
@@ -50,8 +54,10 @@ interface StudentsViewProps {
   classes: ClassGroup[];
   enrollments: Enrollment[];
   isLoading?: boolean;
+  tenantId?: string;
   onOpenCreateStudent: () => void;
   onEditStudent: (student: Student) => void;
+  onUpdatePerson?: (updatedPerson: Person) => void;
 }
 
 export const StudentsView: React.FC<StudentsViewProps> = ({
@@ -64,14 +70,105 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   classes,
   enrollments,
   isLoading,
+  tenantId,
   onOpenCreateStudent,
   onEditStudent,
+  onUpdatePerson,
 }) => {
   const [viewMode, setViewMode] = useState<'students' | 'guardians'>('students');
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [profileTab, setProfileTab] = useState<'id' | 'guardians' | 'anthropometry' | 'health' | 'ranks' | 'classes'>('id');
+
+  // Estado para Edição de Responsável diretamente na aba Famílias & Responsáveis
+  const [editingGuardian, setEditingGuardian] = useState<Person | null>(null);
+  const [editGName, setEditGName] = useState('');
+  const [editGCpf, setEditGCpf] = useState('');
+  const [editGPhone, setEditGPhone] = useState('');
+  const [editGEmail, setEditGEmail] = useState('');
+  const [editGBirthDate, setEditGBirthDate] = useState('1985-01-01');
+  const [editGGender, setEditGGender] = useState<'male' | 'female' | 'other'>('male');
+  const [editGCpfStatus, setEditGCpfStatus] = useState<{ isValid: boolean; error?: string } | null>(null);
+  const [editGError, setEditGError] = useState('');
+  const [editGSuccess, setEditGSuccess] = useState('');
+  const [isSavingGuardian, setIsSavingGuardian] = useState(false);
+
+  const handleStartEditGuardian = (p: Person) => {
+    setEditingGuardian(p);
+    setEditGName(p.fullName);
+    setEditGCpf(p.cpf ? formatCPF(p.cpf) : '');
+    setEditGPhone(p.phone || '');
+    setEditGEmail(p.email || '');
+    setEditGBirthDate(p.birthDate || '1985-01-01');
+    setEditGGender(p.gender || 'male');
+    setEditGCpfStatus(p.cpf ? { isValid: validateCPF(p.cpf).isValid } : null);
+    setEditGError('');
+    setEditGSuccess('');
+  };
+
+  const handleEditGCpfChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value;
+    const clean = cleanCPF(raw);
+    if (clean.length > 11) return;
+    const formatted = clean.length > 0 ? formatCPF(clean) : '';
+    setEditGCpf(formatted);
+
+    if (clean.length === 0) {
+      setEditGCpfStatus(null);
+      return;
+    }
+    if (clean.length < 11) {
+      setEditGCpfStatus({ isValid: false, error: `Digite 11 dígitos (${clean.length}/11)` });
+      return;
+    }
+    const val = validateCPF(clean);
+    setEditGCpfStatus({ isValid: val.isValid, error: val.error });
+  };
+
+  const handleSaveGuardianEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingGuardian) return;
+    setEditGError('');
+    setEditGSuccess('');
+
+    if (!editGName.trim()) {
+      setEditGError('O nome completo do responsável é obrigatório.');
+      return;
+    }
+
+    const cleanC = cleanCPF(editGCpf);
+    if (cleanC) {
+      const val = validateCPF(cleanC);
+      if (!val.isValid) {
+        setEditGError(`CPF inválido: ${val.error}`);
+        return;
+      }
+    }
+
+    setIsSavingGuardian(true);
+    try {
+      const activeTenant = tenantId || editingGuardian.tenantId;
+      const updated = await studentService.updatePerson(activeTenant, editingGuardian.id, {
+        fullName: editGName.trim(),
+        cpf: cleanC || undefined,
+        phone: editGPhone.trim() || undefined,
+        email: editGEmail.trim() || undefined,
+        birthDate: editGBirthDate,
+        gender: editGGender,
+      });
+
+      onUpdatePerson?.(updated);
+      setEditGSuccess('Dados do responsável atualizados com sucesso no banco!');
+      setTimeout(() => {
+        setEditingGuardian(null);
+      }, 1000);
+    } catch (err: any) {
+      setEditGError(err?.message || 'Falha ao atualizar responsável.');
+    } finally {
+      setIsSavingGuardian(false);
+    }
+  };
 
   const getStudentPerson = (student: Student): Person => {
     const found = persons.find((p) => p.id === student.personId);
@@ -159,19 +256,24 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
     return Array.from(map.values());
   }, [guardians, persons, students]);
 
-  // Responsáveis filtrados pela busca
+  // Responsáveis filtrados pela busca (nome, CPF com ou sem máscara, dependente, telefone, e-mail)
   const filteredGuardians = useMemo(() => {
     const term = searchTerm.toLowerCase().trim();
     if (!term) return guardiansGrouped;
+    const cleanTerm = cleanCPF(term);
 
     return guardiansGrouped.filter((item) => {
       const matchesName = item.person.fullName.toLowerCase().includes(term);
-      const matchesCpf = item.person.cpf ? item.person.cpf.includes(term) : false;
+      const matchesCpf =
+        (item.person.cpf && cleanTerm && cleanCPF(item.person.cpf).includes(cleanTerm)) ||
+        (item.person.cpf ? item.person.cpf.toLowerCase().includes(term) : false);
+      const matchesPhone = item.person.phone ? item.person.phone.includes(term) : false;
+      const matchesEmail = item.person.email ? item.person.email.toLowerCase().includes(term) : false;
       const matchesDependent = item.dependents.some((d) =>
         d.studentPerson.fullName.toLowerCase().includes(term) ||
         d.student.registrationNumber.toLowerCase().includes(term)
       );
-      return matchesName || matchesCpf || matchesDependent;
+      return matchesName || matchesCpf || matchesPhone || matchesEmail || matchesDependent;
     });
   }, [guardiansGrouped, searchTerm]);
 
@@ -503,6 +605,17 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                           <span>{item.person.email}</span>
                         </div>
                       )}
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => handleStartEditGuardian(item.person)}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors text-xs font-semibold cursor-pointer"
+                        title="Editar dados cadastrais do responsável"
+                      >
+                        <Edit className="h-3.5 w-3.5 text-red-400" />
+                        <span>Editar</span>
+                      </button>
                     </div>
                   </div>
 
@@ -944,6 +1057,165 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                 </div>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Edição de Dados do Responsável */}
+      {editingGuardian && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="relative w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl text-slate-200">
+            <button
+              onClick={() => setEditingGuardian(null)}
+              className="absolute top-4 right-4 p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              <X className="h-5 w-5" />
+            </button>
+
+            <div className="flex items-center gap-2 mb-4">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-red-600/20 text-red-500">
+                <Edit className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Editar Responsável</h3>
+                <p className="text-xs text-slate-400">
+                  Atualize os dados cadastrais da pessoa física no banco de dados.
+                </p>
+              </div>
+            </div>
+
+            {editGError && (
+              <div className="mb-4 p-3 rounded-lg bg-red-950/50 border border-red-500/50 text-xs text-red-200 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
+                <span>{editGError}</span>
+              </div>
+            )}
+
+            {editGSuccess && (
+              <div className="mb-4 p-3 rounded-lg bg-emerald-950/50 border border-emerald-500/50 text-xs text-emerald-200 flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+                <span>{editGSuccess}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveGuardianEdit} className="space-y-4 text-xs">
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">Nome Completo *</label>
+                <input
+                  type="text"
+                  required
+                  value={editGName}
+                  onChange={(e) => setEditGName(e.target.value)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-slate-300 font-medium">CPF (11 dígitos)</label>
+                  {editGCpfStatus && (
+                    <span className={`text-[10px] flex items-center gap-1 ${editGCpfStatus.isValid ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {editGCpfStatus.isValid ? (
+                        <>
+                          <CheckCircle2 className="h-2.5 w-2.5" />
+                          <span>CPF Válido</span>
+                        </>
+                      ) : (
+                        <>
+                          <AlertCircle className="h-2.5 w-2.5" />
+                          <span>{editGCpfStatus.error}</span>
+                        </>
+                      )}
+                    </span>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  value={editGCpf}
+                  onChange={handleEditGCpfChange}
+                  placeholder="000.000.000-00"
+                  maxLength={14}
+                  className={`w-full rounded-lg border px-3 py-2 text-white font-mono placeholder-slate-500 focus:outline-none ${
+                    editGCpfStatus && !editGCpfStatus.isValid
+                      ? 'border-red-500 bg-red-950/20'
+                      : editGCpfStatus && editGCpfStatus.isValid
+                      ? 'border-emerald-500 bg-emerald-950/20'
+                      : 'border-slate-700 bg-slate-800 focus:border-red-500'
+                  }`}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-300 font-medium mb-1">Telefone / WhatsApp</label>
+                  <input
+                    type="text"
+                    value={editGPhone}
+                    onChange={(e) => setEditGPhone(e.target.value)}
+                    placeholder="(11) 98888-7777"
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-300 font-medium mb-1">E-mail</label>
+                  <input
+                    type="email"
+                    value={editGEmail}
+                    onChange={(e) => setEditGEmail(e.target.value)}
+                    placeholder="responsavel@email.com"
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white placeholder-slate-500 focus:border-red-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-300 font-medium mb-1">Data de Nascimento</label>
+                  <input
+                    type="date"
+                    value={editGBirthDate}
+                    onChange={(e) => setEditGBirthDate(e.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-300 font-medium mb-1">Gênero</label>
+                  <select
+                    value={editGGender}
+                    onChange={(e) => setEditGGender(e.target.value as any)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-white focus:border-red-500 focus:outline-none"
+                  >
+                    <option value="male">Masculino</option>
+                    <option value="female">Feminino</option>
+                    <option value="other">Outro</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setEditingGuardian(null)}
+                  className="px-4 py-2 rounded-lg border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingGuardian}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 active:bg-red-700 text-white font-semibold transition-colors disabled:opacity-50"
+                >
+                  {isSavingGuardian ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <span>Salvando...</span>
+                    </>
+                  ) : (
+                    <span>Salvar Alterações</span>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

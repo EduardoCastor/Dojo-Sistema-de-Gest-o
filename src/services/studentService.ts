@@ -1871,13 +1871,43 @@ export const studentService = {
       throw new Error('Nenhum registro de aluno localizado para atualização ou permissão negada.');
     }
 
-    // 3. Atualizar ou Vincular Responsável Legal / Financeiro
+    // 3. Atualizar, Vincular ou Desvincular Responsável Legal / Financeiro
     let resultGuardianPerson: Person | undefined = undefined;
     let resultRelationship: GuardianRelationship | undefined = undefined;
 
-    if (payload.hasGuardian && payload.guardianName?.trim()) {
-      if (effectiveGuardianPersonId && isValidUUID(effectiveGuardianPersonId)) {
-        // Atualizar responsável existente
+    if (payload.hasGuardian === false) {
+      // Usuário optou por desvincular o responsável deste aluno
+      const { error: unlinkError } = await supabase
+        .from('guardian_relationships')
+        .delete()
+        .eq('student_id', payload.studentId)
+        .eq('tenant_id', payload.tenantId);
+
+      if (unlinkError) {
+        console.warn('Aviso ao desvincular responsável no Supabase:', unlinkError.message);
+      }
+    } else if (payload.hasGuardian && payload.guardianName?.trim()) {
+      let guardianPersonIdToLink = effectiveGuardianPersonId;
+
+      // Se não temos ID prévio de pessoa, verificar se já existe pessoa com esse CPF no tenant
+      if (!guardianPersonIdToLink && payload.guardianCpf) {
+        const cleanGCpf = cleanCPF(payload.guardianCpf);
+        if (cleanGCpf) {
+          const { data: existingPersonByCpf } = await supabase
+            .from('persons')
+            .select('id')
+            .eq('tenant_id', payload.tenantId)
+            .eq('cpf', cleanGCpf)
+            .maybeSingle();
+
+          if (existingPersonByCpf) {
+            guardianPersonIdToLink = existingPersonByCpf.id;
+          }
+        }
+      }
+
+      if (guardianPersonIdToLink && isValidUUID(guardianPersonIdToLink)) {
+        // Atualizar dados cadastrais do responsável existente
         const { data: gpData } = await supabase
           .from('persons')
           .update({
@@ -1887,7 +1917,7 @@ export const studentService = {
             email: payload.guardianEmail?.trim() || null,
             updated_at: new Date().toISOString(),
           })
-          .eq('id', effectiveGuardianPersonId)
+          .eq('id', guardianPersonIdToLink)
           .eq('tenant_id', payload.tenantId)
           .select()
           .single();
@@ -1897,9 +1927,10 @@ export const studentService = {
             id: gpData.id,
             tenantId: gpData.tenant_id,
             fullName: gpData.full_name,
+            socialName: gpData.social_name || undefined,
             cpf: gpData.cpf || '',
             birthDate: gpData.birth_date,
-            gender: gpData.gender,
+            gender: gpData.gender || 'other',
             phone: gpData.phone || '',
             email: gpData.email || '',
             address: gpData.address || {},
@@ -1907,39 +1938,45 @@ export const studentService = {
           };
         }
 
-        if (payload.guardianRelId && isValidUUID(payload.guardianRelId)) {
-          const { data: grData } = await supabase
+        // Verificar se já existe vínculo deste aluno com este ou outro responsável
+        const { data: existingRel } = await supabase
+          .from('guardian_relationships')
+          .select('*')
+          .eq('student_id', payload.studentId)
+          .eq('tenant_id', payload.tenantId)
+          .maybeSingle();
+
+        if (existingRel) {
+          const { data: updatedGr } = await supabase
             .from('guardian_relationships')
             .update({
+              guardian_person_id: guardianPersonIdToLink,
               relationship_label: payload.relationshipType || 'Responsável',
-              guardian_person_id: effectiveGuardianPersonId,
             })
-            .eq('id', payload.guardianRelId)
-            .eq('tenant_id', payload.tenantId)
+            .eq('id', existingRel.id)
             .select()
             .single();
 
-          if (grData && resultGuardianPerson) {
+          if (updatedGr) {
             resultRelationship = {
-              id: grData.id,
-              tenantId: grData.tenant_id,
+              id: updatedGr.id,
+              tenantId: updatedGr.tenant_id,
               studentId: payload.studentId,
-              guardianPersonId: resultGuardianPerson.id,
-              relationshipLabel: grData.relationship_label,
-              isLegalGuardian: grData.is_legal_guardian,
-              isFinancialGuardian: grData.is_financial_guardian,
-              isEmergencyContact: grData.is_emergency_contact,
-              isPickupAuthorized: grData.is_pickup_authorized,
+              guardianPersonId: guardianPersonIdToLink,
+              relationshipLabel: updatedGr.relationship_label,
+              isLegalGuardian: updatedGr.is_legal_guardian,
+              isFinancialGuardian: updatedGr.is_financial_guardian,
+              isEmergencyContact: updatedGr.is_emergency_contact,
+              isPickupAuthorized: updatedGr.is_pickup_authorized,
             };
           }
         } else {
-          // Criar novo vínculo com a pessoa de responsável
-          const { data: grData } = await supabase
+          const { data: newGr } = await supabase
             .from('guardian_relationships')
             .insert({
               tenant_id: payload.tenantId,
               student_id: payload.studentId,
-              guardian_person_id: effectiveGuardianPersonId,
+              guardian_person_id: guardianPersonIdToLink,
               relationship_label: payload.relationshipType || 'Responsável',
               is_legal_guardian: true,
               is_financial_guardian: true,
@@ -1949,17 +1986,17 @@ export const studentService = {
             .select()
             .single();
 
-          if (grData && resultGuardianPerson) {
+          if (newGr) {
             resultRelationship = {
-              id: grData.id,
-              tenantId: grData.tenant_id,
+              id: newGr.id,
+              tenantId: newGr.tenant_id,
               studentId: payload.studentId,
-              guardianPersonId: resultGuardianPerson.id,
-              relationshipLabel: grData.relationship_label,
-              isLegalGuardian: grData.is_legal_guardian,
-              isFinancialGuardian: grData.is_financial_guardian,
-              isEmergencyContact: grData.is_emergency_contact,
-              isPickupAuthorized: grData.is_pickup_authorized,
+              guardianPersonId: guardianPersonIdToLink,
+              relationshipLabel: newGr.relationship_label,
+              isLegalGuardian: newGr.is_legal_guardian,
+              isFinancialGuardian: newGr.is_financial_guardian,
+              isEmergencyContact: newGr.is_emergency_contact,
+              isPickupAuthorized: newGr.is_pickup_authorized,
             };
           }
         }
@@ -1985,42 +2022,76 @@ export const studentService = {
             id: newGp.id,
             tenantId: newGp.tenant_id,
             fullName: newGp.full_name,
+            socialName: newGp.social_name || undefined,
             cpf: newGp.cpf || '',
             birthDate: newGp.birth_date,
-            gender: newGp.gender,
+            gender: newGp.gender || 'other',
             phone: newGp.phone || '',
             email: newGp.email || '',
             address: newGp.address || {},
             createdAt: newGp.created_at,
           };
 
-          const { data: newGr } = await supabase
+          const { data: existingRel } = await supabase
             .from('guardian_relationships')
-            .insert({
-              tenant_id: payload.tenantId,
-              student_id: payload.studentId,
-              guardian_person_id: newGp.id,
-              relationship_label: payload.relationshipType || 'Responsável',
-              is_legal_guardian: true,
-              is_financial_guardian: true,
-              is_emergency_contact: true,
-              is_pickup_authorized: true,
-            })
-            .select()
-            .single();
+            .select('*')
+            .eq('student_id', payload.studentId)
+            .eq('tenant_id', payload.tenantId)
+            .maybeSingle();
 
-          if (newGr) {
-            resultRelationship = {
-              id: newGr.id,
-              tenantId: newGr.tenant_id,
-              studentId: payload.studentId,
-              guardianPersonId: newGp.id,
-              relationshipLabel: newGr.relationship_label,
-              isLegalGuardian: newGr.is_legal_guardian,
-              isFinancialGuardian: newGr.is_financial_guardian,
-              isEmergencyContact: newGr.is_emergency_contact,
-              isPickupAuthorized: newGr.is_pickup_authorized,
-            };
+          if (existingRel) {
+            const { data: updatedGr } = await supabase
+              .from('guardian_relationships')
+              .update({
+                guardian_person_id: newGp.id,
+                relationship_label: payload.relationshipType || 'Responsável',
+              })
+              .eq('id', existingRel.id)
+              .select()
+              .single();
+
+            if (updatedGr) {
+              resultRelationship = {
+                id: updatedGr.id,
+                tenantId: updatedGr.tenant_id,
+                studentId: payload.studentId,
+                guardianPersonId: newGp.id,
+                relationshipLabel: updatedGr.relationship_label,
+                isLegalGuardian: updatedGr.is_legal_guardian,
+                isFinancialGuardian: updatedGr.is_financial_guardian,
+                isEmergencyContact: updatedGr.is_emergency_contact,
+                isPickupAuthorized: updatedGr.is_pickup_authorized,
+              };
+            }
+          } else {
+            const { data: newGr } = await supabase
+              .from('guardian_relationships')
+              .insert({
+                tenant_id: payload.tenantId,
+                student_id: payload.studentId,
+                guardian_person_id: newGp.id,
+                relationship_label: payload.relationshipType || 'Responsável',
+                is_legal_guardian: true,
+                is_financial_guardian: true,
+                is_emergency_contact: true,
+                is_pickup_authorized: true,
+              })
+              .select()
+              .single();
+
+            if (newGr) {
+              resultRelationship = {
+                id: newGr.id,
+                tenantId: newGr.tenant_id,
+                studentId: payload.studentId,
+                guardianPersonId: newGp.id,
+                relationshipLabel: newGr.relationship_label,
+                isLegalGuardian: newGr.is_legal_guardian,
+                isFinancialGuardian: newGr.is_financial_guardian,
+                isEmergencyContact: newGr.is_emergency_contact,
+                isPickupAuthorized: newGr.is_pickup_authorized,
+              };
+            }
           }
         }
       }
@@ -2250,6 +2321,79 @@ export const studentService = {
       person: finalPerson,
       guardianPerson: resultGuardianPerson,
       relationship: resultRelationship,
+    };
+  },
+
+  /**
+   * Atualiza dados de identificação e contato de uma pessoa física no Supabase (aluno ou responsável).
+   */
+  async updatePerson(
+    tenantId: string,
+    personId: string,
+    data: {
+      fullName: string;
+      cpf?: string;
+      socialName?: string;
+      phone?: string;
+      email?: string;
+      birthDate?: string;
+      gender?: 'male' | 'female' | 'other';
+    }
+  ): Promise<Person> {
+    if (!isSupabaseConfigured() || !supabase) {
+      throw new Error('Supabase não configurado');
+    }
+    if (!isValidUUID(tenantId) || !isValidUUID(personId)) {
+      throw new Error('Identificadores de academia ou pessoa física inválidos.');
+    }
+
+    const clean = cleanCPF(data.cpf);
+    if (clean) {
+      const val = validateCPF(clean);
+      if (!val.isValid) {
+        throw new Error(`CPF inválido: ${val.error}`);
+      }
+      const dupl = await this.checkCpfDuplicity(tenantId, clean, personId);
+      if (dupl.isDuplicate) {
+        throw new Error(dupl.message);
+      }
+    }
+
+    const updatePayload: any = {
+      full_name: data.fullName.trim(),
+      cpf: clean || null,
+      social_name: data.socialName?.trim() || null,
+      phone: data.phone?.trim() || null,
+      email: data.email?.trim() || null,
+      updated_at: new Date().toISOString(),
+    };
+    if (data.birthDate) updatePayload.birth_date = data.birthDate;
+    if (data.gender) updatePayload.gender = data.gender;
+
+    const { data: updated, error } = await supabase
+      .from('persons')
+      .update(updatePayload)
+      .eq('id', personId)
+      .eq('tenant_id', tenantId)
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(`Erro ao atualizar dados pessoais no Supabase: ${error.message}`);
+    }
+
+    return {
+      id: updated.id,
+      tenantId: updated.tenant_id,
+      fullName: updated.full_name,
+      socialName: updated.social_name || undefined,
+      cpf: updated.cpf || '',
+      birthDate: updated.birth_date,
+      gender: updated.gender || 'other',
+      phone: updated.phone || '',
+      email: updated.email || '',
+      address: updated.address || {},
+      createdAt: updated.created_at,
     };
   },
 };
